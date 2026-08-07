@@ -1,0 +1,16 @@
+{
+  "name": "syon-leads",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Finds Ontario safety-training leads from free public data. Zero dependencies.",
+  "scripts": {
+    "demo": "node --experimental-strip-types src/run.mts --demo",
+    "dry": "node --experimental-strip-types src/run.mts --dry",
+    "batch": "node --experimental-strip-types src/run.mts",
+    "test": "node --experimental-strip-types --test test/pipeline.test.mts"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}
