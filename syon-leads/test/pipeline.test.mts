@@ -22,8 +22,9 @@ import { join } from 'node:path';
 import { scoreLead, withinSpec, mergeDuplicates, leadKey, courseFromText } from '../src/lib/score.mts';
 import { History } from '../src/lib/history.mts';
 import { toCsv } from '../src/lib/output.mts';
+import { Suppression } from '../src/lib/suppression.mts';
 import { parseBulletin } from '../src/sources/molConvictions.mts';
-import { parsePermitRows } from '../src/sources/torontoPermits.mts';
+import { parsePermitRows } from '../src/sources/ckanPermits.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -210,6 +211,130 @@ describe('never send the same company twice', () => {
       assert.equal(stats.booked, 0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('do-not-contact suppression', () => {
+  function suppressionWith(
+    entries: { companyName: string; reason: string }[],
+  ): { s: Suppression; cleanup: () => void } {
+    const dir = mkdtempSync(join(tmpdir(), 'syon-sup-'));
+    const path = join(dir, 'suppression.json');
+    const s = new Suppression(path);
+    for (const e of entries) s.add(e.companyName, e.reason);
+    return { s, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  }
+
+  test('removes a suppressed company from the batch', () => {
+    const { s, cleanup } = suppressionWith([
+      { companyName: 'Northgate Roofing Ltd.', reason: 'asked not to be called' },
+    ]);
+    try {
+      const leads = [
+        scoreLead(lead({ companyName: 'Northgate Roofing Ltd.' })),
+        scoreLead(lead({ companyName: 'Vertex Construction' })),
+      ];
+      const { kept, removed } = s.filter(leads);
+      assert.equal(removed.length, 1);
+      assert.equal(kept.length, 1);
+      assert.equal(kept[0].companyName, 'Vertex Construction');
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('matches across legal suffix differences', () => {
+    const { s, cleanup } = suppressionWith([
+      { companyName: 'Northgate Roofing Ltd.', reason: 'asked not to be called' },
+    ]);
+    try {
+      assert.equal(s.matches('NORTHGATE Roofing Incorporated'), true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('suppression ignores city, unlike the sent-history ledger', () => {
+    // A request not to be contacted applies to the company, not one site.
+    const { s, cleanup } = suppressionWith([
+      { companyName: 'Halton Cold Storage', reason: 'existing customer' },
+    ]);
+    try {
+      const leads = [
+        scoreLead(lead({ companyName: 'Halton Cold Storage', city: 'Milton' })),
+        scoreLead(lead({ companyName: 'Halton Cold Storage', city: 'Toronto' })),
+      ];
+      assert.equal(s.filter(leads).kept.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('catches a longer trading name containing the suppressed one', () => {
+    const { s, cleanup } = suppressionWith([
+      { companyName: 'Northgate Roofing', reason: 'asked not to be called' },
+    ]);
+    try {
+      assert.equal(s.matches('Northgate Roofing and Sheet Metal Ltd'), true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('does not suppress unrelated companies', () => {
+    const { s, cleanup } = suppressionWith([
+      { companyName: 'Northgate Roofing', reason: 'asked not to be called' },
+    ]);
+    try {
+      assert.equal(s.matches('Southgate Plumbing'), false);
+      assert.equal(s.matches('Vertex Construction Group'), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  test('survives a reload from disk', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syon-sup-'));
+    try {
+      const path = join(dir, 'suppression.json');
+      const first = new Suppression(path);
+      first.add('Northgate Roofing Ltd.', 'asked not to be called');
+      first.save();
+
+      const reloaded = new Suppression(path);
+      assert.equal(reloaded.count, 1);
+      assert.equal(reloaded.matches('Northgate Roofing Inc'), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('honours do-not-contact outcomes recorded in the ledger', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syon-sup-'));
+    try {
+      const s = new Suppression(join(dir, 'suppression.json'));
+      const target = scoreLead(lead({ companyName: 'Northgate Roofing Ltd.' }));
+
+      assert.equal(s.filter([target]).kept.length, 1, 'not suppressed yet');
+
+      // Simulates History.doNotContactKeys() feeding the runtime set.
+      s.addRuntimeKeys([target.key]);
+      assert.equal(s.filter([target]).kept.length, 0, 'now suppressed');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('adding the same company twice is a no-op', () => {
+    const { s, cleanup } = suppressionWith([
+      { companyName: 'Northgate Roofing Ltd.', reason: 'asked not to be called' },
+      { companyName: 'NORTHGATE Roofing Limited', reason: 'duplicate' },
+    ]);
+    try {
+      assert.equal(s.count, 1);
+    } finally {
+      cleanup();
     }
   });
 });

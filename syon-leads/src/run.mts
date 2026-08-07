@@ -12,11 +12,13 @@ import { sources } from './sources/index.mts';
 import { config } from './config.mts';
 import { scoreLead, withinSpec, mergeDuplicates } from './lib/score.mts';
 import { History } from './lib/history.mts';
+import { Suppression } from './lib/suppression.mts';
 import { writeBatch } from './lib/output.mts';
 import type { RawLead, ScoredLead } from './types.mts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const HISTORY_PATH = join(root, 'data', 'history.json');
+const SUPPRESSION_PATH = join(root, 'data', 'suppression.json');
 const OUT_DIR = join(root, 'out');
 
 const args = process.argv.slice(2);
@@ -70,18 +72,29 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Suppression is applied before the history filter, so a company that asked
+  // not to be contacted is removed even if it has never been sent.
+  const suppression = new Suppression(SUPPRESSION_PATH);
+  suppression.addRuntimeKeys(history.doNotContactKeys());
+
   const inSpec = raw.filter(withinSpec);
   const scored: ScoredLead[] = inSpec.map(scoreLead);
   const merged = mergeDuplicates(scored);
-  const fresh = history.filterUnseen(merged);
+  const { kept, removed } = suppression.filter(merged);
+  const fresh = history.filterUnseen(kept);
   const batch = fresh.slice(0, config.batchSize);
 
   console.log('');
   console.log(`  ${raw.length} raw`);
   console.log(`  ${inSpec.length} in service area and within ${config.maxTriggerAgeDays}d`);
   console.log(`  ${merged.length} after merging duplicate companies`);
+  console.log(`  ${kept.length} after do-not-contact suppression (${removed.length} removed)`);
   console.log(`  ${fresh.length} never sent before`);
   console.log(`  ${batch.length} in this batch`);
+
+  if (removed.length > 0) {
+    console.log(`\n  Suppressed: ${removed.map((l) => l.companyName).join(', ')}`);
+  }
 
   if (batch.length < config.batchSize) {
     console.warn(

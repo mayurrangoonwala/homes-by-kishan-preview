@@ -53,6 +53,7 @@ Plus a one-page markdown summary for the email body.
 - **Never sends the same company twice.** `data/history.json` is a permanent
   ledger, matched on a normalised name so "Acme Inc." and "ACME Limited" are
   one company. It is committed to git so it cannot be lost with a laptop.
+- **Honours do-not-contact requests.** See below.
 - **Merges duplicates across sources** and scores them *higher* — a company
   appearing in both enforcement and hiring data is a stronger lead than either
   signal alone.
@@ -64,9 +65,9 @@ Plus a one-page markdown summary for the email body.
 ## Honest status
 
 **Verified:** the pipeline. Scoring, recency decay, service-area filtering,
-duplicate merging, the never-send-twice ledger, CSV escaping, batch numbering.
-21 tests, all passing. This is the part with commercial consequences and it is
-correct.
+duplicate merging, the never-send-twice ledger, do-not-contact suppression,
+CSV escaping, batch numbering. 29 tests, all passing. This is the part with
+commercial consequences and it is correct.
 
 **Not verified:** the three source parsers, against live endpoints. This was
 built in a sandbox whose network policy blocks `ontario.ca`,
@@ -98,13 +99,51 @@ to say.
 
 Worth telling Sandeep plainly rather than letting him discover it.
 
+## Do-not-contact list
+
+Two things suppress a company, and both are checked before the batch is built:
+
+1. **`data/suppression.json`** — standing entries. Someone rang Syon and asked
+   to be left alone, or Raj knows a company is an existing customer, a
+   competitor, or off-limits for any other reason.
+
+   ```json
+   [
+     {
+       "companyName": "Northgate Roofing Ltd.",
+       "reason": "Asked not to be contacted, 2026-08-01",
+       "addedAt": "2026-08-01T00:00:00.000Z"
+     }
+   ]
+   ```
+
+   `reason` is required. Unexplained entries get deleted by someone later who
+   cannot tell why they are there.
+
+2. **`do-not-contact` in a returned call sheet.** Anything Sandeep marks that
+   way in the ledger is suppressed from the next run onward.
+
+Matching is deliberately looser than the sent-history ledger: it ignores the
+city (a request applies to the company, not one site) and catches longer
+trading names, so "Northgate Roofing" also blocks "Northgate Roofing and Sheet
+Metal Ltd". `not-interested` is **not** suppression — that is a no for now, and
+worth another look in a year.
+
 ## Adding sources
 
 Cheapest wins first:
 
-1. **Mississauga, Brampton, Hamilton permit portals.** All run comparable open
-   data platforms. `torontoPermits.mts` is a usable template. Toronto alone
-   covers a fraction of the service area.
+1. **More permit portals.** `ckanPermitSource()` turns a portal into a source
+   from a config object, so a new CKAN municipality is a few lines. Toronto
+   alone covers a fraction of the service area, so this is the biggest easy
+   gain.
+
+   Only Toronto is configured, on purpose: Mississauga, Brampton and Hamilton
+   publish on ArcGIS Hub or bespoke platforms rather than CKAN, and their
+   endpoints have not been confirmed from here. Find the real dataset URL
+   first — a guessed endpoint that 404s is worse than an honest gap. ArcGIS
+   portals need a small adapter alongside `ckanPermits.mts`; the parser and
+   height-relevance filter are reusable as-is.
 2. **Ontario Business Registry** for new incorporations in relevant sectors.
 3. **WSIB classification data** for sector targeting.
 
@@ -120,7 +159,9 @@ Calls are made by Syon, so the obligations sit with them. Two things to know:
   calls**, and CASL governs email and texts rather than phone calls. Worth
   confirming properly rather than taking it from a README.
 - Anyone who asks not to be contacted goes on a suppression list applied to
-  every future batch. Nothing implements that yet — add it before volume grows.
+  every future batch. Implemented — see "Do-not-contact list" above. The
+  process gap that remains is human: Sandeep has to actually report the
+  requests, so make that an explicit ask when you send each batch.
 
 ## Layout
 
@@ -130,12 +171,15 @@ src/
   types.mts
   run.mts           CLI
   sources/          One adapter per data source
+    ckanPermits.mts   Reusable CKAN permit adapter + parser
   lib/score.mts     Scoring, recency, dedupe keys, merging
   lib/history.mts   The permanent ledger
+  lib/suppression.mts  Do-not-contact list
   lib/output.mts    CSV + summary
   fixtures/demo.mts Invented sample leads for --demo
-test/               21 tests
-data/history.json   Every lead ever sent. Commit this.
+test/               29 tests
+data/history.json     Every lead ever sent. Commit this.
+data/suppression.json Do-not-contact list. Commit this.
 ```
 
 Tuning lives in `config.mts` — batch size, cities, keyword map, weights.

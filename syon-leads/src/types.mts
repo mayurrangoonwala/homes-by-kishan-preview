@@ -62,6 +62,19 @@ export type HistoryEntry = {
   companyName: string;
   batch: string;
   sentAt: string;
-  /** Filled in by Sandeep after calling. This is the feedback loop. */
-  outcome?: 'not-called' | 'no-answer' | 'not-interested' | 'interested' | 'booked';
+  /**
+   * Filled in by Sandeep after calling. This is the feedback loop.
+   *
+   * `not-interested` and `do-not-contact` are deliberately different: the
+   * first means no sale this time and the company may be worth another look
+   * in a year, the second means they asked to be left alone and must never
+   * appear in a batch again.
+   */
+  outcome?:
+    | 'not-called'
+    | 'no-answer'
+    | 'not-interested'
+    | 'interested'
+    | 'booked'
+    | 'do-not-contact';
 };

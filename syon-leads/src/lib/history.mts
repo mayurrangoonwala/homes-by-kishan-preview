@@ -73,4 +73,15 @@ export class History {
     const booked = this.entries.filter((e) => e.outcome === 'booked').length;
     return { sent, called, interested, booked };
   }
+
+  /**
+   * Companies Sandeep marked as do-not-contact on a returned call sheet.
+   * Unioned into the suppression list on every run, so a request to be left
+   * alone is honoured from the moment it is recorded.
+   */
+  doNotContactKeys(): string[] {
+    return this.entries
+      .filter((e) => e.outcome === 'do-not-contact')
+      .map((e) => e.key);
+  }
 }
