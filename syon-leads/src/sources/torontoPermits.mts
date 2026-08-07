@@ -1,11 +1,3 @@
-// Toronto Open Data — active building permits.
-//
-// UNVERIFIED AGAINST THE LIVE ENDPOINT. The sandbox this was written in blocks
-// the host, so the CKAN call sequence below (package_show to locate the active
-// resource, then datastore_search) is standard but the permit dataset's field
-// names must be confirmed on first run. The parser tries several spellings and
-// skips rows it cannot read rather than guessing.
-
 import { ckanPermitSource, type CkanPortal } from './ckanPermits.mts';
 
 export const torontoPortal: CkanPortal = {
@@ -13,6 +5,10 @@ export const torontoPortal: CkanPortal = {
   label: 'Toronto building permits',
   api: 'https://ckan0.cf.opendata.inter.prod-toronto.ca/api/3/action',
   packageId: 'building-permits-active-permits',
+  // Used when the slug above no longer resolves, which is the usual failure
+  // mode for open-data portals — datasets get renamed far more often than
+  // they get withdrawn.
+  searchTerms: ['building permits active', 'building permits', 'permits'],
   city: 'Toronto',
   datasetUrl: 'https://open.toronto.ca/dataset/building-permits-active-permits/',
 };

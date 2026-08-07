@@ -1,13 +1,9 @@
-import type { RawLead } from '../types.mts';
+import type { Source } from './types.mts';
 import { fetchMolConvictions } from './molConvictions.mts';
 import { fetchJobBank } from './jobbank.mts';
 import { fetchTorontoPermits } from './torontoPermits.mts';
 
-export type Source = {
-  id: string;
-  label: string;
-  fetch: () => Promise<RawLead[]>;
-};
+export type { Source, SourceResult, SourceContext } from './types.mts';
 
 export const sources: Source[] = [
   {

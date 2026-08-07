@@ -28,6 +28,11 @@ const only = args.includes('--source')
 const dry = args.includes('--dry');
 /** Runs the full pipeline on invented sample leads — no network required. */
 const demo = args.includes('--demo');
+/**
+ * Saves every raw payload to debug/ and prints a diagnosis per source.
+ * Implies --dry: inspection must never be able to write a sendable batch.
+ */
+const inspect = args.includes('--inspect');
 
 /** Batch names continue the Syon-leads-00N series already in use with Sandeep. */
 function nextBatchName(history: History): string {
@@ -54,17 +59,40 @@ async function main(): Promise<void> {
 
     console.log(`Sourcing leads from ${active.length} source(s)…\n`);
 
+    const debugDir = inspect ? join(root, 'debug') : undefined;
+
     for (const source of active) {
       try {
-        const found = await source.fetch();
-        raw.push(...found);
-        console.log(`  ${source.label}: ${found.length} raw`);
+        const result = await source.fetch({ debugDir });
+        raw.push(...result.leads);
+
+        console.log(`  ${source.label}: ${result.leads.length} raw`);
+
+        // Diagnostics are the point of this whole exercise: they say whether
+        // an empty result means blocked, JavaScript-rendered, or genuinely a
+        // parser bug — three problems with three different fixes.
+        for (const d of result.diagnostics) {
+          const mark = d.ok ? 'ok' : '!!';
+          console.log(`    [${mark}] ${d.note}`);
+          if (d.bytes !== undefined) console.log(`         ${d.bytes} bytes received`);
+          if (d.sampleFields?.length) {
+            console.log(`         fields present: ${d.sampleFields.join(', ')}`);
+          }
+          for (const hint of d.hints) console.log(`         -> ${hint}`);
+          if (d.rawPath) console.log(`         raw saved: ${d.rawPath}`);
+        }
       } catch (err) {
         // A dead source must not take the batch down with it — the others
         // still produce a usable list, and a short batch beats no batch.
         console.warn(`  ${source.label}: FAILED — ${(err as Error).message}`);
       }
     }
+  }
+
+  if (inspect) {
+    console.log('\n--inspect: nothing written. Raw payloads are in debug/.');
+    console.log('Send those files plus this output and the parsers can be fixed directly.');
+    return;
   }
 
   if (raw.length === 0) {

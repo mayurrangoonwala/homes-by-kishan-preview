@@ -7,10 +7,11 @@ fortnightly call sheet.
 subscriptions. Node 22.6+ only.
 
 ```bash
-npm run demo    # full pipeline on invented sample data — no network
-npm test        # 21 tests
-npm run dry     # live sources, print results, write nothing
-npm run batch   # live sources, write the call sheet
+npm run demo     # full pipeline on invented sample data — no network
+npm test         # 48 tests
+npm run inspect  # hit the live sources, diagnose them, write nothing
+npm run dry      # live sources, print candidate leads, write nothing
+npm run batch    # live sources, write the call sheet
 ```
 
 ## The idea
@@ -66,23 +67,44 @@ Plus a one-page markdown summary for the email body.
 
 **Verified:** the pipeline. Scoring, recency decay, service-area filtering,
 duplicate merging, the never-send-twice ledger, do-not-contact suppression,
-CSV escaping, batch numbering. 29 tests, all passing. This is the part with
-commercial consequences and it is correct.
+CSV escaping, batch numbering, and the diagnostics below. 48 tests, all
+passing. This is the part with commercial consequences and it is correct.
 
 **Not verified:** the three source parsers, against live endpoints. This was
-built in a sandbox whose network policy blocks `ontario.ca`,
+built in an environment whose egress policy blocks `ontario.ca`,
 `jobbank.gc.ca` and the Toronto CKAN API, so the parsers are written against
 the documented shape of those pages but have never run on the real HTML.
 
-Expect to recalibrate them on first contact. Run one at a time:
+## Calibrating the sources
+
+Start here:
 
 ```bash
-node --experimental-strip-types src/run.mts --source mol-convictions --dry
+npm run inspect
 ```
 
-If a parser returns zero rows, the page shape has moved. The parsers are
-deliberately conservative — they skip anything ambiguous rather than guess,
-because a wrong company name on a call sheet is worse than a short batch.
+This fetches every source, saves the raw payloads to `debug/`, and says what
+it received. It writes no batch, so it cannot produce anything sendable.
+
+The point is that "0 leads" has at least four causes needing four different
+fixes, and the output names which one you have:
+
+| Report | Meaning | Fix |
+| --- | --- | --- |
+| `HTTP 403 — refused` | Blocked, not unmatched | Try a browser; if it works there, use their data download |
+| `HTTP 404 — moved` | Page renamed | Update the URL |
+| `results are rendered by JavaScript` | HTML has no data in it | **No parser will ever work.** Find the data feed |
+| `parser matched nothing` | Real content, patterns wrong | Genuine parser fix — send the raw file |
+| `N records but none parsed` | Schema differs | Output lists the real column names; add them to `FIELD_CANDIDATES` |
+
+Built to survive the common failures: the CKAN dataset is located by search as
+well as by slug, so a rename does not break it; the MOL source parses the index
+and falls back to following linked bulletins; column names are a candidate list
+rather than hardcoded.
+
+The parsers stay deliberately conservative — they skip anything ambiguous
+rather than guess, because a wrong company name on a call sheet is worse than a
+short batch.
 
 ## The real limitation: phone numbers
 

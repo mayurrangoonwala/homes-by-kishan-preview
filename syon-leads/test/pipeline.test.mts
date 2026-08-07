@@ -23,8 +23,13 @@ import { scoreLead, withinSpec, mergeDuplicates, leadKey, courseFromText } from 
 import { History } from '../src/lib/history.mts';
 import { toCsv } from '../src/lib/output.mts';
 import { Suppression } from '../src/lib/suppression.mts';
-import { parseBulletin } from '../src/sources/molConvictions.mts';
-import { parsePermitRows } from '../src/sources/ckanPermits.mts';
+import { classifyHtml, describeVerdict, describeHttpFailure } from '../src/lib/diagnose.mts';
+import {
+  parseBulletin,
+  extractCompanyName,
+  bulletinLinks,
+} from '../src/sources/molConvictions.mts';
+import { parsePermitRows, explainNoRows } from '../src/sources/ckanPermits.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -356,6 +361,137 @@ describe('call sheet output', () => {
   });
 });
 
+describe('fetch diagnosis', () => {
+  test('recognises a JavaScript shell as unfixable by parsing', () => {
+    const shell =
+      '<html><head>' +
+      '<script src="/a.js"></script><script src="/b.js"></script>' +
+      '<script src="/c.js"></script><script src="/d.js"></script>' +
+      '</head><body><div id="root"></div></body></html>' +
+      // Padding so it is not classified as merely "empty".
+      `<!--${'x'.repeat(2000)}-->`;
+
+    assert.equal(classifyHtml(shell), 'js-shell');
+
+    const d = describeVerdict('jobbank', 'js-shell', { bytes: shell.length, matched: 0 });
+    assert.equal(d.ok, false);
+    assert.ok(
+      d.hints.some((h) => /data feed|open data|Network tab/i.test(h)),
+      'must point at finding a data feed, not at fixing the parser',
+    );
+  });
+
+  test('recognises a block page', () => {
+    const blocked = `<html><body><h1>Access Denied</h1>${'p'.repeat(1000)}</body></html>`;
+    assert.equal(classifyHtml(blocked), 'blocked');
+    const d = describeVerdict('mol-convictions', 'blocked', { bytes: 1000, matched: 0 });
+    assert.ok(d.note.includes('not a parser problem'));
+  });
+
+  test('real content with no matches is reported as a parser fix', () => {
+    const d = describeVerdict('mol-convictions', 'content', { bytes: 50000, matched: 0 });
+    assert.equal(d.ok, false);
+    assert.ok(/parser fix/i.test(d.note));
+  });
+
+  test('real content with matches is a pass', () => {
+    const d = describeVerdict('mol-convictions', 'content', { bytes: 50000, matched: 7 });
+    assert.equal(d.ok, true);
+    assert.equal(d.hints.length, 0);
+  });
+
+  test('a page of real prose is classified as content', () => {
+    const prose = `<html><body><article>${'The Ministry of Labour reported that a company was fined. '.repeat(40)}</article></body></html>`;
+    assert.equal(classifyHtml(prose), 'content');
+  });
+});
+
+describe('CKAN schema reporting', () => {
+  test('names the fields present when nothing parses', () => {
+    const rows = [{ APPLICANT_FULL_NAME: 'Skyline Roofing', PROPOSED_WORK: 'Roof replacement' }];
+    const d = explainNoRows('toronto-permits', rows);
+
+    assert.equal(d.ok, false);
+    assert.deepEqual(d.sampleFields, ['APPLICANT_FULL_NAME', 'PROPOSED_WORK']);
+    assert.ok(
+      d.hints.some((h) => h.includes('FIELD_CANDIDATES.applicant')),
+      'must say exactly which list to add the real column name to',
+    );
+  });
+
+  test('distinguishes an empty dataset from a mapping problem', () => {
+    const d = explainNoRows('toronto-permits', []);
+    assert.ok(/no records at all/i.test(d.note));
+  });
+
+  test('when columns are recognised, blames the height filter instead', () => {
+    const rows = [{ APPLICANT: 'Interior Fitouts Ltd', WORK: 'Interior alterations' }];
+    const d = explainNoRows('toronto-permits', rows);
+    assert.ok(
+      d.hints.some((h) => /HEIGHT_RELEVANT/.test(h)),
+      'columns were found, so the filter is the remaining suspect',
+    );
+  });
+});
+
+describe('company-name extraction', () => {
+  test('keeps a trailing full stop on the legal suffix', () => {
+    assert.equal(
+      extractCompanyName('Precision Metal Works Inc. was fined $75,000.'),
+      'Precision Metal Works Inc.',
+    );
+  });
+
+  test('does not truncate at a trade word before the legal suffix', () => {
+    // The regression this guards: "Roofing" in the suffix list truncated the
+    // name to "Northgate Roofing" and silently dropped the legal entity.
+    assert.equal(
+      extractCompanyName('Northgate Roofing Ltd. was convicted under the OHSA.'),
+      'Northgate Roofing Ltd.',
+    );
+  });
+
+  test('does not truncate Incorporated to Inc', () => {
+    assert.equal(
+      extractCompanyName('Vertex Fabrication Incorporated pleaded guilty.'),
+      'Vertex Fabrication Incorporated',
+    );
+  });
+
+  test('falls back to the pre-verb pattern when there is no legal suffix', () => {
+    assert.equal(
+      extractCompanyName('Skyline Contracting was fined after a fall.'),
+      'Skyline Contracting',
+    );
+  });
+
+  test('returns undefined rather than guessing', () => {
+    assert.equal(extractCompanyName('a worker was injured on site'), undefined);
+  });
+});
+
+describe('bulletin link following', () => {
+  test('picks out conviction bulletin links and ignores the rest', () => {
+    const html = `
+      <a href="/page/court-bulletins-convictions-june-2026">June</a>
+      <a href="/page/court-bulletin-may-2026">May</a>
+      <a href="/page/about-ontario">About</a>
+      <a href="https://twitter.com/ontario">Twitter</a>
+    `;
+    const links = bulletinLinks(html, 'https://www.ontario.ca/page/court-bulletins-convictions');
+
+    assert.equal(links.length, 2);
+    assert.ok(links.every((l) => /court-bulletin/.test(l)));
+    assert.ok(links.every((l) => l.startsWith('https://www.ontario.ca')), 'links are absolute');
+  });
+
+  test('excludes the index page itself and anchors', () => {
+    const base = 'https://www.ontario.ca/page/court-bulletins-convictions';
+    const html = `<a href="${base}">self</a><a href="${base}#top">anchor</a>`;
+    assert.equal(bulletinLinks(html, base).length, 0);
+  });
+});
+
 describe('source parsers (shape-pinned, not live-verified)', () => {
   test('extracts company, fine and city from a conviction bulletin', () => {
     const bulletin =
@@ -401,5 +537,29 @@ describe('source parsers (shape-pinned, not live-verified)', () => {
 
   test('skips permit rows with no applicant', () => {
     assert.equal(parsePermitRows([{ WORK: 'Roof replacement' }]).length, 0);
+  });
+});
+
+describe('HTTP failure diagnosis', () => {
+  test('403 is reported as a refusal, not a moved page', () => {
+    const d = describeHttpFailure('mol-convictions', 403, 'ontario.ca');
+    assert.ok(/refused/i.test(d.note));
+    assert.ok(d.hints.some((h) => /browser/i.test(h)));
+    assert.ok(!d.hints.some((h) => /moved|renamed/i.test(h)));
+  });
+
+  test('404 is reported as moved', () => {
+    const d = describeHttpFailure('mol-convictions', 404, 'ontario.ca');
+    assert.ok(/moved or been renamed/i.test(d.note));
+  });
+
+  test('429 points at the throttle', () => {
+    const d = describeHttpFailure('jobbank', 429, 'jobbank.gc.ca');
+    assert.ok(d.hints.some((h) => /THROTTLE_MS/.test(h)));
+  });
+
+  test('5xx says there is nothing to fix locally', () => {
+    const d = describeHttpFailure('jobbank', 503, 'jobbank.gc.ca');
+    assert.ok(d.hints.some((h) => /nothing to fix/i.test(h)));
   });
 });

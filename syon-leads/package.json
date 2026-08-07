@@ -7,6 +7,7 @@
   "scripts": {
     "demo": "node --experimental-strip-types src/run.mts --demo",
     "dry": "node --experimental-strip-types src/run.mts --dry",
+    "inspect": "node --experimental-strip-types src/run.mts --inspect",
     "batch": "node --experimental-strip-types src/run.mts",
     "test": "node --experimental-strip-types --test test/pipeline.test.mts"
   },
