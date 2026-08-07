@@ -27,8 +27,9 @@ Correct them in `lib/courses.ts`. Every page, the JSON-LD, the sitemap and
 
 | Course | Claim drafted | Confirmed? |
 | --- | --- | --- |
-| Working at Heights | CPO-approved; valid 3 years; required under O. Reg. 213/91 | ☐ |
-| Working at Heights | Syon is an approved CPO training provider — **this is asserted throughout and must be true** | ☐ |
+| Working at Heights | Valid 3 years; required under O. Reg. 213/91 | ☐ |
+| Working at Heights | ~~Syon is an approved CPO training provider~~ — **CONFIRMED FALSE.** Syon is not CPO-approved; its delivery partners are. Corrected across the site: `deliveredBy: 'approved-partner'` in `lib/courses.ts`, a "Delivered by" row on every fact table, and an explicit FAQ answering "Is Syon Safety a CPO-approved training provider?" | ☑ |
+| **All other courses** | Marked `deliveredBy: 'syon'`, meaning Syon's own trainers. **This is an assumption, not a confirmed fact.** If any are also vendor-delivered, change the field and every page updates | ☐ |
 | WHMIS 2015 | No fixed statutory expiry; annual review is practice; O. Reg. 860 | ☐ |
 | Forklift operator | No provincial licence exists; 3-year refresher is convention; CSA B335 | ☐ |
 | JHSC certification | Part 1 three days, Part 2 two days; 20+ worker threshold; OHSA s.9 | ☐ |

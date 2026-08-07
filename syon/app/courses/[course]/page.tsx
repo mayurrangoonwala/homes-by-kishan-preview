@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
-import { courses, getCourse } from '@/lib/courses';
+import { courses, getCourse, deliveryLabel } from '@/lib/courses';
 import { cities } from '@/lib/cities';
 import { buildMetadata } from '@/lib/seo';
 import { Breadcrumbs } from '@/components/Chrome';
@@ -70,6 +70,7 @@ export default async function CoursePage({
       <FactTable
         caption="Course at a glance"
         rows={[
+          { label: 'Delivered by', value: deliveryLabel(course) },
           { label: 'Duration', value: course.duration },
           { label: 'Format', value: course.format },
           { label: 'Certificate validity', value: course.validity },

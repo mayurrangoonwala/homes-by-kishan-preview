@@ -60,7 +60,9 @@ export default async function CityPage({
 
       <AnswerBlock
         question={`Where can ${city.name} employers get workplace safety training?`}
-        answer={`Syon Safety delivers accredited workplace safety training on-site at ${city.name} workplaces, covering Working at Heights, WHMIS 2015, forklift operation, JHSC certification, first aid and confined space entry. Training is delivered at your premises on your own equipment, and group scheduling is available for teams of 5 to 50.`}
+        // "accredited" removed deliberately: Syon does not hold the approvals
+        // itself, its delivery partners do, and the word implied otherwise.
+        answer={`Syon Safety arranges workplace safety training on-site at ${city.name} workplaces, covering Working at Heights, WHMIS 2015, forklift operation, JHSC certification, first aid and confined space entry. Training is delivered at your premises on your own equipment, and group scheduling is available for teams of 5 to 50.`}
       />
 
       <h2>Courses available in {city.name}</h2>

@@ -17,7 +17,23 @@ import { fetchRaw, stripHtml, saveRaw, extractLinks } from '../lib/http.mts';
 import { classifyHtml, describeVerdict, describeHttpFailure } from '../lib/diagnose.mts';
 import { courseFromText } from '../lib/score.mts';
 
-const BULLETIN_INDEX = 'https://www.ontario.ca/page/court-bulletins-convictions';
+/**
+ * Candidate index URLs, tried in order until one returns 200.
+ *
+ * The first entry 404'd on the first live run — ontario.ca had moved the page.
+ * Government sites reorganise regularly, so a single hardcoded URL guarantees
+ * this source breaks periodically and silently. Trying a list, and reporting
+ * which one worked, turns that from an outage into a log line.
+ *
+ * Add the current URL to the TOP of this list when you find it; the old ones
+ * are harmless to keep and document where it used to live.
+ */
+const BULLETIN_INDEX_CANDIDATES = [
+  'https://www.ontario.ca/page/court-bulletins-convictions',
+  'https://www.ontario.ca/page/court-bulletins',
+  'https://www.ontario.ca/page/workplace-health-and-safety-convictions',
+  'https://www.ontario.ca/page/occupational-health-and-safety-convictions',
+];
 
 /** How many linked bulletins to follow when the index has no inline content. */
 const MAX_FOLLOW = 8;
@@ -115,21 +131,34 @@ export function bulletinLinks(html: string, baseUrl: string): string[] {
 }
 
 export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceResult> {
-  const res = await fetchRaw(BULLETIN_INDEX);
+  // Try each candidate until one responds. The attempt log is reported either
+  // way, so a total failure still says exactly what was tried.
+  const attempts: string[] = [];
+  let res = await fetchRaw(BULLETIN_INDEX_CANDIDATES[0]);
+  attempts.push(`${BULLETIN_INDEX_CANDIDATES[0]} -> ${res.status}`);
+
+  for (const candidate of BULLETIN_INDEX_CANDIDATES.slice(1)) {
+    if (res.ok) break;
+    res = await fetchRaw(candidate);
+    attempts.push(`${candidate} -> ${res.status}`);
+  }
+
+  const BULLETIN_INDEX = res.url;
   const rawPath = ctx.debugDir
     ? saveRaw(ctx.debugDir, 'mol-index.html', res.body)
     : undefined;
 
   if (!res.ok) {
-    return {
-      leads: [],
-      diagnostics: [
-        describeHttpFailure('mol-convictions', res.status, 'ontario.ca', {
-          bytes: res.bytes,
-          rawPath,
-        }),
-      ],
-    };
+    const diag = describeHttpFailure('mol-convictions', res.status, 'ontario.ca', {
+      bytes: res.bytes,
+      rawPath,
+    });
+    diag.hints = [
+      'Every known URL for this page failed. Attempts:',
+      ...attempts.map((a) => `   ${a}`),
+      'Search "Ontario Ministry of Labour court bulletins convictions" in a browser, then add the working URL to the TOP of BULLETIN_INDEX_CANDIDATES in src/sources/molConvictions.mts.',
+    ];
+    return { leads: [], diagnostics: [diag] };
   }
 
   const text = stripHtml(res.body);

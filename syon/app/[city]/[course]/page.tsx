@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { cities, getCity } from '@/lib/cities';
-import { courses, getCourse } from '@/lib/courses';
+import { courses, getCourse, deliveryLabel, deliveryVerb } from '@/lib/courses';
 import { buildMetadata, cityCourseTitle } from '@/lib/seo';
 import { Breadcrumbs } from '@/components/Chrome';
 import { JsonLd } from '@/components/JsonLd';
@@ -76,7 +76,7 @@ export default async function CityCoursePage({
   const localisedFaqs = [
     {
       question: `Do you deliver ${course.shortName} training in ${city.name}?`,
-      answer: `Yes. Syon Safety delivers ${course.name} on-site at ${city.name} workplaces and throughout ${city.region}. Sessions run ${course.duration} and can be scheduled around your shift pattern.`,
+      answer: `Yes. Syon Safety ${deliveryVerb(course)} ${course.name} on-site at ${city.name} workplaces and throughout ${city.region}. Sessions run ${course.duration} and can be scheduled around your shift pattern.`,
     },
     ...course.faqs,
   ];
@@ -108,7 +108,7 @@ export default async function CityCoursePage({
 
       <AnswerBlock
         question={`Where can I get ${course.shortName} training in ${city.name}?`}
-        answer={`Syon Safety delivers ${course.name} on-site in ${city.name}, Ontario. The program runs ${course.duration}${
+        answer={`Syon Safety ${deliveryVerb(course)} ${course.name} on-site in ${city.name}, Ontario. The program runs ${course.duration}${
           course.validity.toLowerCase().startsWith('no ')
             ? ''
             : ` and certification is valid for ${course.validity.toLowerCase()}`
@@ -119,6 +119,7 @@ export default async function CityCoursePage({
         caption={`${course.shortName} in ${city.name} at a glance`}
         rows={[
           { label: 'Location', value: `On-site in ${city.name}, ${city.region}` },
+          { label: 'Delivered by', value: deliveryLabel(course) },
           { label: 'Duration', value: course.duration },
           { label: 'Format', value: course.format },
           { label: 'Certificate validity', value: course.validity },

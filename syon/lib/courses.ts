@@ -14,10 +14,27 @@ export type Faq = {
   answer: string;
 };
 
+/**
+ * Who actually stands in front of the class.
+ *
+ * Syon does not hold Chief Prevention Officer approval itself — its delivery
+ * partners do. Ontario only accepts a CPO-approved provider for Working at
+ * Heights, so claiming or implying that approval for Syon would be a false
+ * compliance claim on a page that customers rely on to stay legal. It is
+ * modelled as data rather than fixed in copy so no page can drift back to the
+ * wrong version.
+ */
+export type DeliveryModel =
+  /** Syon's own trainers deliver it. */
+  | 'syon'
+  /** Coordinated by Syon, delivered by an approved partner provider. */
+  | 'approved-partner';
+
 export type Course = {
   slug: string;
   name: string;
   shortName: string;
+  deliveredBy: DeliveryModel;
   /**
    * Query variants real buyers type. Used for internal anchor-text variation
    * and to seed the keyword map — NOT for meta keywords (dead since 2009) and
@@ -46,6 +63,10 @@ export const courses: Course[] = [
     slug: 'working-at-heights',
     name: 'Working at Heights Training',
     shortName: 'Working at Heights',
+    // Syon is not CPO-approved; its delivery partners are. Ontario accepts
+    // only a CPO-approved provider for this program, so the distinction is
+    // legally material and stated openly on every page.
+    deliveredBy: 'approved-partner',
     aliases: [
       'working at heights training',
       'WAH training',
@@ -85,7 +106,12 @@ export const courses: Course[] = [
       {
         question: 'Can Working at Heights training be delivered on our site?',
         answer:
-          'Yes. Syon Safety delivers Working at Heights training at your workplace across Ontario, which avoids travel time and lost productivity for your crew.',
+          'Yes. Syon Safety arranges Working at Heights training at your workplace across Ontario, which avoids travel time and lost productivity for your crew.',
+      },
+      {
+        question: 'Is Syon Safety a CPO-approved training provider?',
+        answer:
+          'Working at Heights must be delivered by a training provider approved by Ontario\'s Chief Prevention Officer. Syon Safety coordinates this program and it is delivered by an approved provider, so the certificate your workers receive is issued by that approved provider and is fully valid across Ontario.',
       },
     ],
   },
@@ -93,6 +119,7 @@ export const courses: Course[] = [
     slug: 'whmis',
     name: 'WHMIS 2015 (GHS) Training',
     shortName: 'WHMIS',
+    deliveredBy: 'syon',
     aliases: [
       'WHMIS training',
       'WHMIS 2015 certification',
@@ -140,6 +167,7 @@ export const courses: Course[] = [
     slug: 'forklift-operator',
     name: 'Forklift and Lift Truck Operator Training',
     shortName: 'Forklift Operator',
+    deliveredBy: 'syon',
     aliases: [
       'forklift training',
       'forklift certification',
@@ -187,6 +215,7 @@ export const courses: Course[] = [
     slug: 'jhsc-certification',
     name: 'JHSC Certification Training (Part 1 and Part 2)',
     shortName: 'JHSC Certification',
+    deliveredBy: 'syon',
     aliases: [
       'JHSC certification training',
       'joint health and safety committee training',
@@ -235,6 +264,7 @@ export const courses: Course[] = [
     slug: 'first-aid-cpr',
     name: 'Standard First Aid and CPR/AED Training',
     shortName: 'First Aid and CPR',
+    deliveredBy: 'syon',
     aliases: [
       'first aid training',
       'CPR certification',
@@ -282,6 +312,7 @@ export const courses: Course[] = [
     slug: 'confined-space',
     name: 'Confined Space Entry Training',
     shortName: 'Confined Space',
+    deliveredBy: 'syon',
     aliases: [
       'confined space training',
       'confined space entry course',
@@ -329,6 +360,7 @@ export const courses: Course[] = [
     slug: 'health-and-safety-awareness',
     name: 'Worker and Supervisor Health and Safety Awareness',
     shortName: 'Health and Safety Awareness',
+    deliveredBy: 'syon',
     aliases: [
       'worker health and safety awareness training',
       'supervisor health and safety awareness',
@@ -374,6 +406,7 @@ export const courses: Course[] = [
     slug: 'fall-protection',
     name: 'Fall Protection and Elevated Work Platform Training',
     shortName: 'Fall Protection',
+    deliveredBy: 'syon',
     aliases: [
       'fall protection training',
       'elevated work platform training',
@@ -424,4 +457,22 @@ export const courseSlugs = courses.map((c) => c.slug);
 
 export function getCourse(slug: string): Course | undefined {
   return courses.find((c) => c.slug === slug);
+}
+
+/**
+ * How the delivery model is described on the page.
+ *
+ * Kept next to the data so copy cannot drift away from the fact. Wording is
+ * deliberately plain: a customer needs to understand that the certificate is
+ * valid, and that the approval sits with the provider who issues it.
+ */
+export function deliveryLabel(course: Course): string {
+  return course.deliveredBy === 'approved-partner'
+    ? 'Coordinated by Syon Safety, delivered by an approved training provider'
+    : 'Delivered by Syon Safety';
+}
+
+/** Verb for sentences of the form "Syon Safety ___ this course in Toronto." */
+export function deliveryVerb(course: Course): string {
+  return course.deliveredBy === 'approved-partner' ? 'arranges' : 'delivers';
 }

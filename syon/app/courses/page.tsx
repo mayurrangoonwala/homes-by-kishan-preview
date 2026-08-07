@@ -32,7 +32,7 @@ export default function CoursesPage() {
 
       <AnswerBlock
         question="Which safety courses does Syon Safety deliver?"
-        answer="Syon Safety delivers Working at Heights, WHMIS 2015, forklift and lift truck operator training, JHSC certification Parts 1 and 2, Standard First Aid with CPR/AED, confined space entry, fall protection and elevated work platform training, and the mandatory worker and supervisor health and safety awareness programs."
+        answer="Syon Safety provides Working at Heights, WHMIS 2015, forklift and lift truck operator training, JHSC certification Parts 1 and 2, Standard First Aid with CPR/AED, confined space entry, fall protection and elevated work platform training, and the mandatory worker and supervisor health and safety awareness programs. Working at Heights is delivered by an approved training provider under Syon's coordination."
       />
 
       <ul className="cards">
