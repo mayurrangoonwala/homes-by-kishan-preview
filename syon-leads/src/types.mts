@@ -16,8 +16,19 @@ export type CourseSlug =
   | 'fall-protection';
 
 export type TriggerKind =
-  /** Company was recently convicted or issued orders by the Ministry of Labour. */
+  /** Convicted or ordered by the Ministry of Labour under the OHSA. */
   | 'mol-enforcement'
+  /**
+   * Convicted by the WSIB under the Workplace Safety and Insurance Act.
+   *
+   * Deliberately distinct from mol-enforcement. WSIB prosecutes insurance
+   * obligations — failing to register, failing to report an injury,
+   * misstating payroll — whereas the Ministry prosecutes the safety failures
+   * themselves. Both mark a business with a compliance problem and both are
+   * worth calling, but only one is direct evidence that someone got hurt,
+   * so they must not carry the same weight.
+   */
+  | 'wsib-enforcement'
   /** Company is hiring for a role that requires certification. */
   | 'hiring'
   /** Company pulled a construction permit — work at height is likely. */

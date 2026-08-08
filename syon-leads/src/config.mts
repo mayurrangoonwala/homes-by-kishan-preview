@@ -183,6 +183,10 @@ export function travelBonus(city?: string): number {
  */
 export const weights: Record<string, number> = {
   'mol-enforcement': 100,
+  // High, but below an OHSA conviction: a WSIB prosecution proves a
+  // compliance gap rather than an injury, so the training conversation is a
+  // step less urgent.
+  'wsib-enforcement': 70,
   hiring: 60,
   'construction-permit': 35,
   'new-business': 15,
@@ -199,6 +203,7 @@ export const weights: Record<string, number> = {
 /** Sources are ordered by value; the runner reports per-source yield. */
 export const enabledSources = [
   'mol-convictions',
+  'wsib-convictions',
   'jobbank',
   'toronto-permits',
 ] as const;

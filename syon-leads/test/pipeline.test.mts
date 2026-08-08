@@ -38,6 +38,7 @@ import {
 } from '../src/sources/ckanPermits.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
 import { extractReleases, candidateEndpoints } from '../src/lib/newsApi.mts';
+import { wsibConvictionLinks } from '../src/sources/wsibConvictions.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -949,5 +950,66 @@ describe('newsroom JSON API', () => {
     assert.ok(urls.length >= 3);
     assert.ok(urls.every((u) => u.includes('types=2007')));
     assert.ok(urls.every((u) => u.startsWith('https://news.ontario.ca')));
+  });
+});
+
+describe('WSIB convictions', () => {
+  test('scores below an OHSA conviction', () => {
+    // A WSIB prosecution proves a compliance gap; an OHSA conviction usually
+    // means someone got hurt. Conflating them would put the weaker signal at
+    // the top of the call sheet.
+    const wsib = scoreLead(
+      lead({ trigger: { kind: 'wsib-enforcement', detail: 'x', date: daysAgo(2) } }),
+    );
+    const mol = scoreLead(
+      lead({ trigger: { kind: 'mol-enforcement', detail: 'x', date: daysAgo(2) } }),
+    );
+    const hiring = scoreLead(
+      lead({ trigger: { kind: 'hiring', detail: 'x', date: daysAgo(2) } }),
+    );
+
+    assert.ok(mol.score > wsib.score, 'OHSA outranks WSIB');
+    assert.ok(wsib.score > hiring.score, 'but WSIB still outranks a job posting');
+  });
+
+  test('parses with WSIB framing rather than OHSA framing', () => {
+    const leads = parseBulletin(
+      'Northgate Roofing Ltd. was fined $12,000 for failing to register with the WSIB.',
+      'https://www.wsib.ca/en/convictions',
+      {
+        source: 'wsib-convictions',
+        kind: 'wsib-enforcement',
+        rationale: 'just penalised for a compliance failure',
+      },
+    );
+
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0].source, 'wsib-convictions');
+    assert.equal(leads[0].trigger.kind, 'wsib-enforcement');
+    assert.ok(leads[0].trigger.detail.includes('$12,000'));
+    assert.ok(
+      !leads[0].trigger.detail.includes('OHSA'),
+      'must not claim an OHSA conviction it does not have evidence of',
+    );
+  });
+
+  test('the Ministry source keeps its own framing by default', () => {
+    const leads = parseBulletin(
+      'Vertex Construction Group was fined $75,000 after a worker fell.',
+      'https://news.ontario.ca/x',
+    );
+    assert.equal(leads[0].source, 'mol-convictions');
+    assert.equal(leads[0].trigger.kind, 'mol-enforcement');
+  });
+
+  test('only follows conviction links on the WSIB domain', () => {
+    const html = `
+      <a href="/en/convictions/company-fined-2026">A</a>
+      <a href="/en/about-us">B</a>
+      <a href="https://twitter.com/wsib/convictions">C</a>
+    `;
+    const links = wsibConvictionLinks(html, 'https://www.wsib.ca/en/convictions');
+    assert.equal(links.length, 1);
+    assert.ok(links[0].startsWith('https://www.wsib.ca'));
   });
 });

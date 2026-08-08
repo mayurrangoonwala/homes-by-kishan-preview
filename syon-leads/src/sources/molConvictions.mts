@@ -97,7 +97,22 @@ export function extractCompanyName(chunk: string): string | undefined {
   return undefined;
 }
 
-export function parseBulletin(text: string, sourceUrl: string): RawLead[] {
+export type BulletinOptions = {
+  source?: string;
+  kind?: 'mol-enforcement' | 'wsib-enforcement';
+  /** Sentence explaining why the conviction is a reason to call. */
+  rationale?: string;
+};
+
+export function parseBulletin(
+  text: string,
+  sourceUrl: string,
+  opts: BulletinOptions = {},
+): RawLead[] {
+  const source = opts.source ?? 'mol-convictions';
+  const kind = opts.kind ?? 'mol-enforcement';
+  const rationale =
+    opts.rationale ?? 'remedial training is the standard next step';
   const leads: RawLead[] = [];
   const seen = new Set<string>();
 
@@ -121,14 +136,14 @@ export function parseBulletin(text: string, sourceUrl: string): RawLead[] {
     );
 
     leads.push({
-      source: 'mol-convictions',
+      source,
       companyName,
       city: cityMatch?.[1],
       trigger: {
-        kind: 'mol-enforcement',
+        kind,
         detail: fineMatch
-          ? `Fined ${fineMatch[0]} under the OHSA — remedial training is the standard next step`
-          : 'Convicted under the OHSA — remedial training is the standard next step',
+          ? `Fined ${fineMatch[0]} — ${rationale}`
+          : `Convicted — ${rationale}`,
         date: dateMatch ? new Date(dateMatch[0]).toISOString() : new Date().toISOString(),
         sourceUrl,
       },
