@@ -44,6 +44,7 @@ import {
   cleanDescription,
   recentPermitsSql,
 } from '../src/sources/ckanPermits.mts';
+import { parseResults, parseLocation } from '../src/sources/jobbank.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
 import { extractReleases, candidateEndpoints } from '../src/lib/newsApi.mts';
 import {
@@ -1148,5 +1149,90 @@ describe('freshness windows differ by trigger kind', () => {
       withinSpec(lead({ trigger: { kind: 'mol-enforcement', detail: 'x', date: daysAgo(200) } })),
       false,
     );
+  });
+});
+
+describe('Job Bank parsing, against the real markup', () => {
+  // Copied from the live capture, trimmed of the sign-in modal.
+  const article = (id: string, title: string, biz: string, loc: string, date: string) =>
+    `<article id="article-${id}" class="action-buttons">` +
+    `<a href="/jobsearch/jobposting/${id};jsessionid=E42.jobsearch76?source=searchresults" class="resultJobItem">` +
+    `<h3 class="title"><span class="flag"><span class="new"> New </span></span>` +
+    `<span class="job-source job-source-icon-25"><span class="wb-inv">indeed.com</span></span>` +
+    `<span class="noctitle"> ${title} </span></h3>` +
+    `<ul class="list-unstyled"><li class="date">${date} </li>` +
+    `<li class="business">${biz}</li>` +
+    `<li class="location"><span class="fas" aria-hidden="true"></span> ` +
+    `<span class="wb-inv">Location</span> ${loc} </li>` +
+    `<li class="salary">Salary $18.00 hourly</li></ul></a></article>`;
+
+  const page =
+    article('50029982', 'forklift operator', 'B&amp;J Global Inc', 'Mississauga (ON)', 'August 07, 2026') +
+    article('50024544', 'forklift operator', 'ITALPASTA Limited', 'Brampton (ON)', 'August 06, 2026');
+
+  test('extracts employer, city and posting date', () => {
+    const leads = parseResults(page, 'forklift', 'https://x');
+    assert.equal(leads.length, 2);
+    assert.equal(leads[0].companyName, 'B&J Global Inc', 'entities are decoded');
+    assert.equal(leads[0].city, 'Mississauga');
+    assert.equal(leads[1].companyName, 'ITALPASTA Limited');
+    assert.equal(leads[1].city, 'Brampton');
+  });
+
+  test('uses the posting date, not the run date', () => {
+    // Without this a stale posting looks current and never ages out.
+    const leads = parseResults(page, 'forklift', 'https://x');
+    assert.equal(leads[0].trigger.date.slice(0, 10), '2026-08-07');
+  });
+
+  test('maps the job title to a course', () => {
+    const leads = parseResults(page, 'forklift', 'https://x');
+    assert.equal(leads[0].suggestedCourse, 'forklift-operator');
+    assert.ok(leads[0].trigger.detail.includes('forklift operator'));
+  });
+
+  test('links to the posting, without the session id', () => {
+    const leads = parseResults(page, 'forklift', 'https://x');
+    assert.equal(
+      leads[0].trigger.sourceUrl,
+      'https://www.jobbank.gc.ca/jobsearch/jobposting/50029982',
+    );
+  });
+
+  test('strips the location furniture', () => {
+    assert.equal(parseLocation('Location Mississauga (ON)'), 'Mississauga');
+    assert.equal(parseLocation('Location Richmond Hill (ON)'), 'Richmond Hill');
+    assert.equal(parseLocation(undefined), undefined);
+  });
+
+  test('ignores page furniture that is not a result', () => {
+    const junk = '<div class="results"><button>Advanced</button></div>';
+    assert.equal(parseResults(junk, 'forklift', 'https://x').length, 0);
+  });
+});
+
+describe('conviction parsing artefacts from the live run', () => {
+  test('keeps the number on a numbered corporation', () => {
+    // A live run produced the useless name "Ontario Corp." because the match
+    // began at the first capital letter.
+    assert.equal(
+      extractCompanyName('2545345 Ontario Corp. was fined $5,000.'),
+      '2545345 Ontario Corp.',
+    );
+  });
+
+  test('only accepts a city when the province follows', () => {
+    // "of Schedule" in legislative boilerplate was shipping "Schedule" as a city.
+    const withProvince = parseBulletin(
+      'Northgate Roofing Ltd. of Brampton, Ontario was fined $50,000.',
+      'https://x',
+    );
+    assert.equal(withProvince[0].city, 'Brampton');
+
+    const boilerplate = parseBulletin(
+      'Vertex Construction Group was fined $50,000 under section 2 of Schedule 1.',
+      'https://x',
+    );
+    assert.equal(boilerplate[0].city, undefined, 'no city rather than a wrong one');
   });
 });

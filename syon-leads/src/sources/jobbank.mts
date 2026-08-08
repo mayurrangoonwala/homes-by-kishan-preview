@@ -8,11 +8,10 @@
 // their terms of service, and building a client-facing process on a terms
 // violation is a liability that outweighs the data.
 //
-// NEVER RUN AGAINST THE LIVE SITE. The most likely outcome is that Job Bank
-// renders results client-side, in which case no parser will ever work and the
-// source needs their data feed instead. That specific failure is detected and
-// reported rather than being reported as "0 results", because the two call for
-// completely different fixes.
+// Verified against the live site. Results are server-rendered — the earlier
+// suspicion that this was a client-rendered app was wrong, and the diagnostics
+// said so correctly ("real content, parser matched nothing"), which is what
+// eventually pointed at the markup rather than at the transport.
 
 import type { RawLead } from '../types.mts';
 import type { SourceResult, SourceContext } from './types.mts';
@@ -49,39 +48,82 @@ export function buildSearchUrl(term: string, location = 'Ontario'): string {
 }
 
 /**
- * Words that appear in a capitalised run but never start a real employer name.
- * Without this the pattern happily returns "Posted Yesterday Toronto ON".
+ * Extracts postings from a Job Bank results page.
+ *
+ * Written against the real markup, which the first live capture finally
+ * revealed. Each result is an <article> carrying labelled list items:
+ *
+ *   <article id="article-50029982">
+ *     <span class="noctitle"> forklift operator </span>
+ *     <li class="date">August 07, 2026</li>
+ *     <li class="business">B&amp;J Global Inc</li>
+ *     <li class="location">... Mississauga (ON)</li>
+ *
+ * Labelled fields mean no guessing: earlier attempts pattern-matched
+ * capitalised runs against stripped text and returned nav furniture like
+ * "Posted Yesterday Toronto".
  */
-const NOT_AN_EMPLOYER =
-  /^(Job|Jobs|Search|Home|Results?|Posted|Salary|Location|Apply|Full|Part|Permanent|Temporary|Hourly|Skip|Menu|Sign|Language|Français|Date|Sort|Filter|New|Verified|Employer|Title|Wage|Terms|Privacy|Government|Canada)\b/i;
+
+const ARTICLE = /<article\b[^>]*id="article-\d+"[\s\S]*?<\/article>/gi;
+
+function field(block: string, cls: string): string | undefined {
+  const m = block.match(new RegExp(`<li class="${cls}"[^>]*>([\\s\\S]*?)<\\/li>`, 'i'));
+  return m ? decode(strip(m[1])) : undefined;
+}
+
+function strip(html: string): string {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function decode(text: string): string {
+  return text
+    .replace(/&amp;/g, '&')
+    .replace(/&#39;|&rsquo;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .trim();
+}
+
+/** "Location Mississauga (ON)" -> "Mississauga". */
+export function parseLocation(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw.replace(/^\s*Location\s*/i, '').trim();
+  const m = cleaned.match(/^(.+?)\s*\((?:ON|Ontario)\)/i);
+  const city = (m ? m[1] : cleaned).trim();
+  return city.length > 1 ? city : undefined;
+}
 
 export function parseResults(
-  text: string,
+  html: string,
   term: string,
   sourceUrl: string,
 ): RawLead[] {
   const leads: RawLead[] = [];
   const seen = new Set<string>();
 
-  // Results render as "<title> <employer> <city> ON <date>" once tags are
-  // stripped. The employer is the capitalised run immediately before a city
-  // and the province marker.
-  const pattern =
-    /([A-Z][\w&.,'-]*(?:\s+[A-Z0-9][\w&.,'-]*){0,6})\s+((?:[A-Z][a-z]+\s?){1,3}),?\s+(?:ON|Ontario)\b/g;
+  for (const [block] of html.matchAll(ARTICLE)) {
+    const companyName = field(block, 'business');
+    if (!companyName || companyName.length < 2) continue;
 
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(text)) !== null) {
-    const companyName = match[1].trim();
-    const city = match[2].trim();
-
-    if (companyName.length < 4) continue;
-    if (NOT_AN_EMPLOYER.test(companyName)) continue;
-    // A run of single capitalised words with no lowercase is usually nav text.
-    if (!/[a-z]/.test(companyName)) continue;
-
-    const key = `${companyName}|${city}`;
+    const city = parseLocation(field(block, 'location'));
+    const key = `${companyName}|${city ?? ''}`;
     if (seen.has(key)) continue;
     seen.add(key);
+
+    const titleMatch = block.match(
+      /<span class="noctitle"[^>]*>([\s\S]*?)<\/span>/i,
+    );
+    const jobTitle = titleMatch ? decode(strip(titleMatch[1])) : term;
+
+    // The posting date is printed on every result, so a stale posting can be
+    // aged out properly rather than assumed current.
+    const dateRaw = field(block, 'date');
+    const posted = dateRaw ? new Date(dateRaw) : undefined;
+
+    const linkMatch = block.match(/href="([^"]*jobposting\/\d+[^"]*)"/i);
+    const link = linkMatch
+      ? new URL(linkMatch[1].split(';')[0], 'https://www.jobbank.gc.ca').toString()
+      : sourceUrl;
 
     leads.push({
       source: 'jobbank',
@@ -89,13 +131,16 @@ export function parseResults(
       city,
       trigger: {
         kind: 'hiring',
-        detail: `Hiring — posting matched "${term}", so they have staff who need certifying`,
-        // Sorted newest-first; without a parsed date, treat as current rather
-        // than undated, which would score as stale and drop the lead.
-        date: new Date().toISOString(),
-        sourceUrl,
+        detail: `Hiring a ${jobTitle} — they have staff who need certifying`,
+        date:
+          posted && !Number.isNaN(posted.getTime())
+            ? posted.toISOString()
+            : new Date().toISOString(),
+        sourceUrl: link,
       },
-      suggestedCourse: courseFromText(`${term} ${companyName}`),
+      // The job title is a far better course signal than the search term that
+      // happened to surface it.
+      suggestedCourse: courseFromText(`${jobTitle} ${term}`),
     });
   }
 
@@ -131,7 +176,7 @@ export async function fetchJobBank(ctx: SourceContext): Promise<SourceResult> {
 
       const text = stripHtml(res.body);
       const verdict = classifyHtml(res.body, text.length);
-      const found = parseResults(text, term, url);
+      const found = parseResults(res.body, term, url);
 
       const diag = describeVerdict('jobbank', verdict, {
         bytes: res.bytes,
@@ -153,7 +198,7 @@ export async function fetchJobBank(ctx: SourceContext): Promise<SourceResult> {
     }
 
     if (res.ok) {
-      all.push(...parseResults(stripHtml(res.body), term, url));
+      all.push(...parseResults(res.body, term, url));
     }
   }
 

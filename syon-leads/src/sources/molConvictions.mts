@@ -80,8 +80,11 @@ const LEGAL_SUFFIX =
   'Incorporated|Inc|Limited|Ltd|Corporation|Corp|Company|Co|Group|Holdings|Enterprises|Partnership|LLP|LP';
 
 const NAME_PATTERNS: RegExp[] = [
+  // The optional leading digit run matters: Ontario numbered corporations are
+  // written "2545345 Ontario Corp." and without it the match started at the
+  // first capital, producing the useless name "Ontario Corp." on a live run.
   new RegExp(
-    `\\b([A-Z][\\w&.'-]*(?:\\s+[A-Z0-9][\\w&.'-]*){0,6}?\\s*(?:${LEGAL_SUFFIX})\\.?)(?!\\w)`,
+    `\\b((?:\\d{5,}\\s+)?[A-Z][\\w&.'-]*(?:\\s+[A-Z0-9][\\w&.'-]*){0,6}?\\s*(?:${LEGAL_SUFFIX})\\.?)(?!\\w)`,
   ),
   /^([A-Z][\w&.'-]*(?:\s+[A-Z0-9][\w&.'-]*){1,5})\s+(?:was|has been|pleaded)/,
 ];
@@ -91,6 +94,8 @@ export function extractCompanyName(chunk: string): string | undefined {
     const m = chunk.match(pattern);
     if (m?.[1]) {
       const name = m[1].replace(/[,\s]+$/, '').trim();
+      // Must contain a lowercase letter: an all-caps run is a heading, not a
+      // company name.
       if (name.length >= 4 && /[a-z]/.test(name)) return name;
     }
   }
@@ -127,8 +132,10 @@ export function parseBulletin(
     if (!companyName || seen.has(companyName)) continue;
     seen.add(companyName);
 
+    // Requires the province to follow. A looser pattern matched "of Schedule"
+    // in legislative boilerplate and shipped "Schedule" as a city.
     const cityMatch = chunk.match(
-      /\b(?:based in|located in|of|a)\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)[-\s]?(?:based)?\b/,
+      /\b(?:of|in|based in|located in)\s+([A-Z][a-z]+(?:[\s-][A-Z][a-z]+)?),\s*(?:Ontario|ON)\b/,
     );
     const fineMatch = chunk.match(/\$[\d,]+(?:\.\d{2})?/);
     const dateMatch = chunk.match(
