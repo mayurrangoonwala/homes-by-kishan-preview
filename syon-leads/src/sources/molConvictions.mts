@@ -29,10 +29,14 @@ import { courseFromText } from '../lib/score.mts';
  * are harmless to keep and document where it used to live.
  */
 const BULLETIN_INDEX_CANDIDATES = [
+  // Ministry of Labour, Immigration, Training and Skills Development
+  // newsroom. Convictions are published here as dated news releases, so this
+  // is a headline index rather than a page of inline bulletins — the
+  // link-following strategy below is the one that does the work.
+  'https://news.ontario.ca/mlitsd/en',
   'https://www.ontario.ca/page/court-bulletins-convictions',
   'https://www.ontario.ca/page/court-bulletins',
   'https://www.ontario.ca/page/workplace-health-and-safety-convictions',
-  'https://www.ontario.ca/page/occupational-health-and-safety-convictions',
 ];
 
 /** How many linked bulletins to follow when the index has no inline content. */
@@ -122,12 +126,35 @@ export function parseBulletin(text: string, sourceUrl: string): RawLead[] {
   return leads;
 }
 
-/** Links from the index that look like individual conviction bulletins. */
+/**
+ * Links worth following from an index page.
+ *
+ * Handles both shapes this source might meet: an ontario.ca page of bulletin
+ * links, and the newsroom at news.ontario.ca where releases live at dated
+ * paths like /mlitsd/en/2026/08/....
+ *
+ * On the newsroom the slug itself is the filter. Most releases are funding
+ * announcements and programme news, and fetching all of them would burn the
+ * request budget on pages containing no convictions — so only slugs carrying
+ * enforcement language are followed.
+ */
+const ENFORCEMENT_SLUG =
+  /convict|prosecut|court-bulletin|fined|guilty|penalt|sentenc|charged|safety-violation/i;
+
+const DATED_RELEASE = /\/\d{4}\/\d{2}\//;
+
 export function bulletinLinks(html: string, baseUrl: string): string[] {
-  return extractLinks(html, baseUrl)
-    .filter((u) => /court-bulletin|conviction|prosecution/i.test(u))
+  const links = extractLinks(html, baseUrl)
     .filter((u) => u !== baseUrl && !u.includes('#'))
-    .slice(0, MAX_FOLLOW);
+    // Stay on the government host the index came from.
+    .filter((u) => /(^|\.)ontario\.ca$/.test(new URL(u).hostname));
+
+  const enforcement = links.filter((u) => ENFORCEMENT_SLUG.test(u));
+  if (enforcement.length > 0) return enforcement.slice(0, MAX_FOLLOW);
+
+  // Nothing obviously enforcement-related: fall back to recent dated releases
+  // and let the conviction-language check in parseBulletin do the filtering.
+  return links.filter((u) => DATED_RELEASE.test(u)).slice(0, MAX_FOLLOW);
 }
 
 export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceResult> {

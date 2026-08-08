@@ -65,6 +65,13 @@ export const courseKeywords: { course: CourseSlug; patterns: RegExp[] }[] = [
       /fall arrest/i,
       /scaffold/i,
       /roofer|roofing/i,
+      // Enforcement notices describe the incident, not the course: "a worker
+      // fell from a roof" never contains the words "working at heights". These
+      // patterns are what let a conviction map to something to actually pitch.
+      /\broofs?\b/i,
+      /fell from|fall from (?:a |the )?(?:height|roof|ladder|scaffold)/i,
+      /\bladder\b/i,
+      /fall(?:ing)? (?:hazard|from height)/i,
     ],
   },
   {

@@ -29,7 +29,11 @@ import {
   extractCompanyName,
   bulletinLinks,
 } from '../src/sources/molConvictions.mts';
-import { parsePermitRows, explainNoRows } from '../src/sources/ckanPermits.mts';
+import {
+  parsePermitRows,
+  explainNoRows,
+  looksLikeBusiness,
+} from '../src/sources/ckanPermits.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -561,5 +565,117 @@ describe('HTTP failure diagnosis', () => {
   test('5xx says there is nothing to fix locally', () => {
     const d = describeHttpFailure('jobbank', 503, 'jobbank.gc.ca');
     assert.ok(d.hints.some((h) => /nothing to fix/i.test(h)));
+  });
+});
+
+describe('Toronto permits — against real rows from the live dataset', () => {
+  // These rows are copied verbatim from the first live run's captured payload,
+  // so the schema here is the real one rather than an assumption.
+  const homeownerRow = {
+    _id: 1,
+    PERMIT_TYPE: 'Mechanical(MS)',
+    STRUCTURE_TYPE: 'SFD - Detached',
+    WORK: 'Building Permit Related(MS)',
+    STREET_NAME: 'PLATEAU',
+    APPLICATION_DATE: '2022-03-26',
+    ISSUED_DATE: '2022-05-26',
+    DESCRIPTION:
+      'HVAC - Proposal to construct a new 2 storey single family dwelling and demolish the existing 2 storey single family dwelling',
+    BUILDER_NAME: 'ABUZAFAR IQBAL A. QURESHI',
+  };
+
+  const contractorRow = {
+    ...homeownerRow,
+    _id: 2,
+    BUILDER_NAME: 'SKYLINE ROOFING & EXTERIORS INC',
+    ISSUED_DATE: daysAgo(5).slice(0, 10),
+  };
+
+  test('drops homeowners pulling permits on their own house', () => {
+    const leads = parsePermitRows([homeownerRow]);
+    assert.equal(leads.length, 0, 'a private individual is not a lead');
+  });
+
+  test('keeps contractors', () => {
+    const leads = parsePermitRows([contractorRow]);
+    assert.equal(leads.length, 1);
+  });
+
+  test('title-cases the shouted company name', () => {
+    const leads = parsePermitRows([contractorRow]);
+    assert.equal(leads[0].companyName, 'Skyline Roofing & Exteriors Inc');
+  });
+
+  test('matches on DESCRIPTION when WORK is a bare category', () => {
+    // WORK here is "Building Permit Related(MS)", which says nothing about
+    // height; the height signal is in DESCRIPTION.
+    const leads = parsePermitRows([contractorRow]);
+    assert.ok(
+      /demolish|new 2 storey/i.test(leads[0].trigger.detail),
+      'the reason to call should quote the useful description, not the category',
+    );
+  });
+
+  test('carries the real issued date through, so staleness filtering works', () => {
+    const leads = parsePermitRows([contractorRow]);
+    assert.equal(withinSpec(leads[0]), true, 'a recent permit is in spec');
+
+    const old = parsePermitRows([{ ...contractorRow, ISSUED_DATE: '2022-05-26' }]);
+    assert.equal(withinSpec(old[0]), false, 'a 2022 permit must be filtered out');
+  });
+
+  test('business detection', () => {
+    assert.equal(looksLikeBusiness('SKYLINE ROOFING INC'), true);
+    assert.equal(looksLikeBusiness('VERTEX CONSTRUCTION'), true);
+    assert.equal(looksLikeBusiness('SMITH & SONS'), true);
+    assert.equal(looksLikeBusiness('ABUZAFAR IQBAL A. QURESHI'), false);
+    assert.equal(looksLikeBusiness('JOHN SMITH'), false);
+  });
+});
+
+describe('newsroom link following (news.ontario.ca)', () => {
+  const base = 'https://news.ontario.ca/mlitsd/en';
+
+  test('prefers releases whose slug shows enforcement', () => {
+    const html = `
+      <a href="/mlitsd/en/2026/08/company-fined-75000-after-worker-injured.html">A</a>
+      <a href="/mlitsd/en/2026/08/ontario-investing-in-skills-training.html">B</a>
+      <a href="/mlitsd/en/2026/07/roofing-firm-convicted-after-fall.html">C</a>
+    `;
+    const links = bulletinLinks(html, base);
+
+    assert.equal(links.length, 2, 'the funding announcement is not followed');
+    assert.ok(links.every((l) => /fined|convicted/.test(l)));
+  });
+
+  test('falls back to dated releases when no slug shows enforcement', () => {
+    const html = `
+      <a href="/mlitsd/en/2026/08/some-release.html">A</a>
+      <a href="/mlitsd/en/about.html">About</a>
+    `;
+    const links = bulletinLinks(html, base);
+    assert.equal(links.length, 1);
+    assert.ok(links[0].includes('/2026/08/'));
+  });
+
+  test('stays on ontario.ca hosts', () => {
+    const html = `
+      <a href="https://twitter.com/ONgov/status/123-convicted">tweet</a>
+      <a href="/mlitsd/en/2026/08/firm-fined.html">real</a>
+    `;
+    const links = bulletinLinks(html, base);
+    assert.equal(links.length, 1);
+    assert.ok(links[0].startsWith('https://news.ontario.ca'));
+  });
+
+  test('parses a conviction out of a real-shaped release headline', () => {
+    const release =
+      'Precision Metal Works Inc. was fined $75,000 on July 14, 2026 after a worker fell from a roof at a Mississauga construction project.';
+    const leads = parseBulletin(release, `${base}/2026/07/x.html`);
+
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0].companyName, 'Precision Metal Works Inc.');
+    assert.equal(leads[0].suggestedCourse, 'working-at-heights');
+    assert.ok(leads[0].trigger.detail.includes('$75,000'));
   });
 });

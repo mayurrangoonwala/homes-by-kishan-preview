@@ -29,6 +29,16 @@ export type CkanPortal = {
   searchTerms: string[];
   city: string;
   datasetUrl: string;
+  /**
+   * CKAN sort expression, e.g. "ISSUED_DATE desc".
+   *
+   * Essential, not cosmetic. Toronto's "active permits" dataset returns rows
+   * in insertion order, so the first page is the OLDEST records — the first
+   * live run pulled 363 permits from 2022, every one of which the staleness
+   * filter would then discard. Sorting newest-first is the difference between
+   * this source producing leads and producing nothing.
+   */
+  sort?: string;
 };
 
 type CkanResource = { id: string; name: string; datastore_active: boolean };
@@ -76,8 +86,36 @@ export const FIELD_CANDIDATES = {
 } as const;
 
 /** Permit descriptions implying work at height. Interior-only work is dropped. */
+// "demolish" and the storey count were both added after testing against real
+// Toronto rows: the live data says "demolish the existing 2 storey dwelling",
+// which the original wording ("demolition", "new building") missed entirely.
+// A multi-storey build is a height job by definition.
 const HEIGHT_RELEVANT =
-  /roof|exterior|facade|fa[çc]ade|cladding|scaffold|new building|addition|demolition|crane|solar|antenna|siding|window replacement|hvac.*roof/i;
+  /roof|exterior|facade|fa[çc]ade|cladding|scaffold|new building|addition|demolition|demolish|crane|solar|antenna|siding|window replacement|hvac.*roof|\d+\s*stor(?:e?y|ies)/i;
+
+/**
+ * Markers that a permit applicant is a business rather than a private
+ * individual.
+ *
+ * Toronto's BUILDER_NAME column mixes the two freely — the first live run
+ * returned entries like "ABUZAFAR IQBAL A. QURESHI", a homeowner replacing his
+ * own house. A homeowner is not a lead for corporate safety training, and
+ * putting one on a call sheet wastes a slot and makes the whole list look
+ * untargeted.
+ *
+ * Requiring a positive business signal, rather than trying to detect person
+ * names, is the safer direction: the failure mode is dropping a real company
+ * with an unusual name, not cold-calling a private individual at home.
+ */
+const BUSINESS_MARKER =
+  /\b(inc|ltd|limited|corp|corporation|co|company|llp|lp|group|holdings|enterprises|construction|contracting|contractors?|builders?|developments?|homes|roofing|mechanical|electric(al)?|plumbing|hvac|services|solutions|management|industries|systems|associates|partners|restoration|renovations?|exteriors?|siding|windows|glazing|masonry|concrete|steel|scaffold\w*)\b\.?/i;
+
+export function looksLikeBusiness(name: string): boolean {
+  if (BUSINESS_MARKER.test(name)) return true;
+  // "&" and "+" in a name almost always indicate a firm ("Smith & Sons").
+  if (/[&+]/.test(name)) return true;
+  return false;
+}
 
 function pick(row: Record<string, unknown>, keys: readonly string[]): string | undefined {
   for (const k of keys) {
@@ -86,6 +124,22 @@ function pick(row: Record<string, unknown>, keys: readonly string[]): string | u
     if (typeof v === 'number') return String(v);
   }
   return undefined;
+}
+
+/**
+ * Title-cases an ALL CAPS applicant name.
+ *
+ * Toronto stores these in caps. "SKYLINE ROOFING INC" shouted at a caller from
+ * a spreadsheet reads like a mail merge; "Skyline Roofing Inc" reads like
+ * someone did the work.
+ */
+export function tidyName(name: string): string {
+  if (name !== name.toUpperCase()) return name;
+  return name
+    .toLowerCase()
+    .replace(/\b([a-z])/g, (_, c: string) => c.toUpperCase())
+    // Initialisms stay upper; Inc and Ltd read better title-cased.
+    .replace(/\b(Llp|Lp|Ulc)\b/g, (m) => m.toUpperCase());
 }
 
 export function parsePermitRows(
@@ -103,20 +157,32 @@ export function parsePermitRows(
     const applicant = pick(row, FIELD_CANDIDATES.applicant);
     if (!applicant) continue;
 
+    // Homeowners pulling permits on their own house are not leads.
+    if (!looksLikeBusiness(applicant)) continue;
+
+    // Match on the work type AND the free-text description. Toronto's WORK
+    // column is often a bare category like "Building Permit Related(MS)" while
+    // DESCRIPTION carries the detail that says whether anyone goes up a ladder.
     const workType = pick(row, FIELD_CANDIDATES.work) ?? '';
-    if (!HEIGHT_RELEVANT.test(workType)) continue;
+    const description = pick(row, ['DESCRIPTION', 'description']) ?? '';
+    const haystack = `${workType} ${description}`;
+    if (!HEIGHT_RELEVANT.test(haystack)) continue;
 
     const issued = pick(row, FIELD_CANDIDATES.issued);
     const address = pick(row, FIELD_CANDIDATES.address);
 
+    // Prefer the specific description over the bare category when describing
+    // why to call — "roof replacement" beats "Building Permit Related(MS)".
+    const what = HEIGHT_RELEVANT.test(description) ? description : workType;
+
     leads.push({
       source,
-      companyName: applicant,
+      companyName: tidyName(applicant),
       city,
       trigger: {
         kind: 'construction-permit',
-        detail: `Pulled a permit for ${workType.toLowerCase()}${
-          address ? ` on ${address}` : ''
+        detail: `Pulled a permit for ${what.toLowerCase().slice(0, 120)}${
+          address ? ` on ${tidyName(address)}` : ''
         } — crews working at height`,
         date: issued ? new Date(issued).toISOString() : new Date().toISOString(),
         sourceUrl: datasetUrl,
@@ -247,9 +313,17 @@ export function ckanPermitSource(portal: CkanPortal) {
     // some carry current data.
     const allRows: Record<string, unknown>[] = [];
     for (const resource of active.slice(0, 3)) {
-      const res = await fetchRaw(
-        `${portal.api}/datastore_search?id=${resource.id}&limit=1000`,
+      const sortParam = portal.sort ? `&sort=${encodeURIComponent(portal.sort)}` : '';
+      let res = await fetchRaw(
+        `${portal.api}/datastore_search?id=${resource.id}&limit=1000${sortParam}`,
       );
+
+      // A sort on a column this resource does not have is a 409. Retrying
+      // unsorted still yields data — stale data, but the diagnostics will say
+      // so, which beats the source failing outright.
+      if (!res.ok && sortParam) {
+        res = await fetchRaw(`${portal.api}/datastore_search?id=${resource.id}&limit=1000`);
+      }
       if (!res.ok) continue;
       if (ctx.debugDir) {
         saveRaw(ctx.debugDir, `${portal.id}-${resource.id.slice(0, 8)}.json`, res.body);

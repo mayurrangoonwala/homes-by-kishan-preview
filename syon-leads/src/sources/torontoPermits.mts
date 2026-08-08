@@ -11,6 +11,10 @@ export const torontoPortal: CkanPortal = {
   searchTerms: ['building permits active', 'building permits', 'permits'],
   city: 'Toronto',
   datasetUrl: 'https://open.toronto.ca/dataset/building-permits-active-permits/',
+  // Confirmed against the live schema: ISSUED_DATE exists and the default
+  // ordering is oldest-first. Without this the first page is permits from
+  // 2022, all of which the staleness filter discards.
+  sort: 'ISSUED_DATE desc',
 };
 
 export const fetchTorontoPermits = ckanPermitSource(torontoPortal);
