@@ -24,7 +24,6 @@ import {
   type SourceDiagnostic,
 } from '../lib/diagnose.mts';
 import { courseFromText } from '../lib/score.mts';
-import { config } from '../config.mts';
 
 const SEARCH = 'https://www.jobbank.gc.ca/jobsearch/jobsearch';
 
@@ -158,20 +157,7 @@ export async function fetchJobBank(ctx: SourceContext): Promise<SourceResult> {
     }
   }
 
-  const area = config.serviceArea.map((c) => c.toLowerCase());
-  const inArea = all.filter((l) => !l.city || area.includes(l.city.toLowerCase()));
-
-  if (all.length > 0 && inArea.length === 0) {
-    diagnostics.push({
-      sourceId: 'jobbank',
-      ok: false,
-      note: `${all.length} postings parsed but none fell inside the service area.`,
-      hints: [
-        'The parser is working; the city filter is rejecting everything.',
-        `Check the extracted city names against config.serviceArea — they may carry a suffix or region name.`,
-      ],
-    });
-  }
-
-  return { leads: inArea, diagnostics };
+  // No location filter. The search is already Ontario-scoped, and Raj travels
+  // anywhere in the province — distance is handled as a scoring bonus instead.
+  return { leads: all, diagnostics };
 }

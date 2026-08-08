@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { scoreLead, withinSpec, mergeDuplicates, leadKey, courseFromText } from '../src/lib/score.mts';
+import { travelBonus } from '../src/config.mts';
 import { History } from '../src/lib/history.mts';
 import { toCsv } from '../src/lib/output.mts';
 import { Suppression } from '../src/lib/suppression.mts';
@@ -33,6 +34,7 @@ import {
   parsePermitRows,
   explainNoRows,
   looksLikeBusiness,
+  cleanDescription,
 } from '../src/sources/ckanPermits.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
 import type { RawLead } from '../src/types.mts';
@@ -122,12 +124,12 @@ describe('scoring', () => {
 });
 
 describe('spec filtering', () => {
-  test('drops leads outside the service area', () => {
-    assert.equal(withinSpec(lead({ city: 'Thunder Bay' })), false);
+  // Raj travels anywhere in Ontario to sign a client, so location must never
+  // disqualify a lead — an earlier version hard-filtered to twelve GTA cities
+  // and silently threw away business from the rest of the province.
+  test('keeps leads regardless of how far away they are', () => {
+    assert.equal(withinSpec(lead({ city: 'Thunder Bay' })), true);
     assert.equal(withinSpec(lead({ city: 'Mississauga' })), true);
-  });
-
-  test('keeps leads with unknown city', () => {
     assert.equal(withinSpec(lead({ city: undefined })), true);
   });
 
@@ -136,6 +138,46 @@ describe('spec filtering', () => {
       withinSpec(lead({ trigger: { kind: 'hiring', detail: 'x', date: daysAgo(90) } })),
       false,
     );
+  });
+});
+
+describe('travel distance ranks, it does not filter', () => {
+  test('home turf outranks the Golden Horseshoe outranks the rest', () => {
+    assert.ok(travelBonus('Mississauga') > travelBonus('Hamilton'));
+    assert.ok(travelBonus('Hamilton') > travelBonus('Thunder Bay'));
+  });
+
+  test('is case and whitespace insensitive', () => {
+    assert.equal(travelBonus('  mississauga '), travelBonus('Mississauga'));
+  });
+
+  test('an unknown city is assumed mid-range rather than penalised', () => {
+    assert.ok(travelBonus(undefined) > travelBonus('Thunder Bay'));
+  });
+
+  test('a nearer lead outscores an identical far one', () => {
+    const near = scoreLead(lead({ city: 'Mississauga' }));
+    const far = scoreLead(lead({ city: 'Thunder Bay' }));
+    assert.ok(near.score > far.score);
+    assert.ok(near.reasons.some((r) => r.includes('near home base')));
+  });
+
+  test('but a strong far lead still beats a weak near one', () => {
+    // The whole point: a Sudbury company that was just fined is worth the
+    // drive; a Mississauga permit is not more valuable just for being close.
+    const farStrong = scoreLead(
+      lead({
+        city: 'Sudbury',
+        trigger: { kind: 'mol-enforcement', detail: 'Fined $75,000', date: daysAgo(2) },
+      }),
+    );
+    const nearWeak = scoreLead(
+      lead({
+        city: 'Mississauga',
+        trigger: { kind: 'construction-permit', detail: 'Permit', date: daysAgo(30) },
+      }),
+    );
+    assert.ok(farStrong.score > nearWeak.score);
   });
 });
 
@@ -161,7 +203,7 @@ describe('duplicate merging', () => {
     assert.equal(merged.length, 1, 'should collapse to a single lead');
     assert.ok(merged[0].score > Math.max(a.score, b.score), 'two signals beat one');
     assert.equal(merged[0].phone, '905-555-0100', 'contact details are merged in');
-    assert.ok(merged[0].reasons.some((r) => r.includes('multi-source')));
+    assert.ok(merged[0].reasons.some((r) => r.includes('corroborated by 2 sources')));
   });
 
   test('output is sorted by score, highest first', () => {
@@ -760,5 +802,102 @@ describe('feed discovery and parsing', () => {
   test('recognises a feed body regardless of content type', () => {
     assert.equal(looksLikeFeed('<?xml version="1.0"?><rss>', ''), true);
     assert.equal(looksLikeFeed('<!DOCTYPE html><html>', 'text/html'), false);
+  });
+});
+
+describe('merging distinguishes corroboration from volume', () => {
+  function permitLead(detail: string) {
+    return scoreLead(
+      lead({
+        source: 'toronto-permits',
+        companyName: 'Yorkwind Holdings Inc',
+        city: 'Toronto',
+        trigger: { kind: 'construction-permit', detail, date: daysAgo(10) },
+      }),
+    );
+  }
+
+  test('six permits from ONE source do not read as six sources', () => {
+    // The regression: a flat +20 per duplicate labelled "multi-source" let a
+    // single busy builder accumulate +100 from one data source.
+    const merged = mergeDuplicates([
+      permitLead('permit A'), permitLead('permit B'), permitLead('permit C'),
+      permitLead('permit D'), permitLead('permit E'), permitLead('permit F'),
+    ]);
+
+    assert.equal(merged.length, 1);
+    assert.ok(
+      !merged[0].reasons.some((r) => /corroborated/.test(r)),
+      'one source is not corroboration',
+    );
+    assert.ok(merged[0].reasons.some((r) => /6 separate records/.test(r)));
+
+    const single = permitLead('permit A');
+    assert.ok(
+      merged[0].score - single.score <= 18,
+      'repeat bonus must saturate rather than scale linearly',
+    );
+  });
+
+  test('two different sources DO count as corroboration', () => {
+    const merged = mergeDuplicates([
+      scoreLead(lead({ source: 'toronto-permits', companyName: 'Acme Ltd', city: 'Toronto' })),
+      scoreLead(lead({ source: 'mol-convictions', companyName: 'Acme Limited', city: 'Toronto',
+        trigger: { kind: 'mol-enforcement', detail: 'Fined', date: daysAgo(3) } })),
+    ]);
+
+    assert.equal(merged.length, 1);
+    assert.ok(merged[0].reasons.some((r) => /corroborated by 2 sources/.test(r)));
+  });
+
+  test('cross-source corroboration outweighs repeat volume', () => {
+    const volume = mergeDuplicates([
+      permitLead('a'), permitLead('b'), permitLead('c'), permitLead('d'),
+    ])[0];
+
+    const corroborated = mergeDuplicates([
+      scoreLead(lead({ source: 'toronto-permits', companyName: 'Beta Ltd', city: 'Toronto',
+        trigger: { kind: 'construction-permit', detail: 'x', date: daysAgo(10) } })),
+      scoreLead(lead({ source: 'jobbank', companyName: 'Beta Ltd', city: 'Toronto',
+        trigger: { kind: 'construction-permit', detail: 'y', date: daysAgo(10) } })),
+    ])[0];
+
+    assert.ok(corroborated.score > volume.score);
+  });
+
+  test('the strongest trigger becomes the headline reason to call', () => {
+    const merged = mergeDuplicates([
+      scoreLead(lead({ source: 'toronto-permits', companyName: 'Acme Ltd',
+        trigger: { kind: 'construction-permit', detail: 'a permit', date: daysAgo(40) } })),
+      scoreLead(lead({ source: 'mol-convictions', companyName: 'Acme Ltd',
+        trigger: { kind: 'mol-enforcement', detail: 'Fined $75,000', date: daysAgo(2) } })),
+    ]);
+    assert.equal(merged[0].trigger.detail, 'Fined $75,000');
+  });
+
+  test('extra records are summarised, not dumped', () => {
+    const merged = mergeDuplicates([
+      permitLead('a'), permitLead('b'), permitLead('c'), permitLead('d'), permitLead('e'),
+    ]);
+    const alsos = merged[0].reasons.filter((r) => r.startsWith('also:'));
+    assert.equal(alsos.length, 2, 'two examples is enough context for a caller');
+    assert.ok(merged[0].reasons.some((r) => /and 2 more/.test(r)));
+  });
+});
+
+describe('permit description cleanup', () => {
+  test('strips the trade prefix that makes one project look like many', () => {
+    assert.equal(
+      cleanDescription('HVAC - Proposal to demolish existing dwelling and construct a fourplex'),
+      'demolish existing dwelling and construct a fourplex',
+    );
+    assert.equal(
+      cleanDescription('Plumbing  - Proposal to construct a new 5 storey condominium'),
+      'construct a new 5 storey condominium',
+    );
+  });
+
+  test('leaves an already-clean description alone', () => {
+    assert.equal(cleanDescription('Roof replacement'), 'Roof replacement');
   });
 });

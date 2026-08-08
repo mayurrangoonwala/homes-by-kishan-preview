@@ -88,7 +88,8 @@ export const demoLeads: RawLead[] = [
   },
   {
     source: 'toronto-permits',
-    // Outside the service area — the runner must drop this one.
+    // Outside the GTA. Kept, flagged, and ranked below nearer leads —
+    // Raj travels anywhere in Ontario to sign a client.
     companyName: 'Sudbury Steel Erectors',
     city: 'Sudbury',
     trigger: {
@@ -100,7 +101,8 @@ export const demoLeads: RawLead[] = [
   },
   {
     source: 'jobbank',
-    // Stale — past the 60-day window, must be dropped.
+    // Stale — past the 60-day window. This one IS dropped: the buying
+    // window has closed regardless of where the company is.
     companyName: 'Oakville Facilities Services',
     city: 'Oakville',
     trigger: {

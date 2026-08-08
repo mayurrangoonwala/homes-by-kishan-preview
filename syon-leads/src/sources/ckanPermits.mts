@@ -117,6 +117,23 @@ export function looksLikeBusiness(name: string): boolean {
   return false;
 }
 
+/**
+ * Tidies a permit description into something a caller can read aloud.
+ *
+ * Toronto prefixes descriptions with the trade that filed the permit —
+ * "HVAC - Proposal to demolish…", "Plumbing - Proposal to…" — which is noise
+ * on a call sheet and, worse, makes several permits for one project look like
+ * different jobs. Also drops the boilerplate "Proposal to" opener.
+ */
+export function cleanDescription(text: string): string {
+  return text
+    .replace(/^\s*(?:hvac|plumbing|drain|electrical|mechanical|part permit)\s*[-–—:]\s*/i, '')
+    .replace(/^\s*proposal to\s+/i, '')
+    .replace(/^\s*proposed\s+/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function pick(row: Record<string, unknown>, keys: readonly string[]): string | undefined {
   for (const k of keys) {
     const v = row[k];
@@ -173,7 +190,9 @@ export function parsePermitRows(
 
     // Prefer the specific description over the bare category when describing
     // why to call — "roof replacement" beats "Building Permit Related(MS)".
-    const what = HEIGHT_RELEVANT.test(description) ? description : workType;
+    const what = cleanDescription(
+      HEIGHT_RELEVANT.test(description) ? description : workType,
+    );
 
     leads.push({
       source,

@@ -109,35 +109,32 @@ if [ -f debug/jobbank-sample.html ]; then
 const fs = require("fs");
 const h = fs.readFileSync("debug/jobbank-sample.html", "utf8");
 
-// Try the likely containers in order of specificity.
-const patterns = [
-  /<article\b[\s\S]{0,1200}?<\/article>/gi,
-  /<li\b[^>]*class="[^"]*result[^"]*"[\s\S]{0,1200}?<\/li>/gi,
-  /<div\b[^>]*class="[^"]*(?:job|result)[^"]*"[\s\S]{0,900}?<\/div>/gi,
-];
 
-let printed = 0;
-for (const p of patterns) {
-  const found = [...h.matchAll(p)];
-  if (found.length === 0) continue;
-  console.log(`pattern ${p.source.slice(0, 40)}... matched ${found.length}`);
-  for (const m of found.slice(0, 2)) {
-    console.log("-----");
-    console.log(m[0].replace(/\s+/g, " ").slice(0, 1200));
-    printed++;
+// Job Bank job links look like /jobsearch/jobposting/<id>. Anchoring on that
+// finds the real result rows regardless of what the wrapper element is called
+// — the first attempt guessed at class names and returned the search toolbar.
+const links = [...h.matchAll(/href="[^"]*jobposting\/\d+[^"]*"/gi)];
+console.log(`job posting links found: ${links.length}`);
+
+if (links.length > 0) {
+  // Print the markup surrounding the first few, which is where the employer
+  // name and location live.
+  let n = 0;
+  for (const m of links) {
+    if (n >= 3) break;
+    const i = m.index ?? 0;
+    console.log("----- context around link " + (n + 1) + " -----");
+    console.log(h.slice(Math.max(0, i - 700), i + 900).replace(/\s+/g, " "));
+    n++;
   }
-  if (printed) break;
-}
-
-if (!printed) {
-  // Nothing matched: show where a known employer-ish string appears so the
-  // real container can be identified by eye.
-  console.log("No known container matched. Context around likely markers:");
-  for (const marker of ["employer", "Business", "noc", "jobtitle", "resultJob"]) {
-    const i = h.toLowerCase().indexOf(marker.toLowerCase());
-    if (i > -1) {
-      console.log(`--- "${marker}" at ${i} ---`);
-      console.log(h.slice(Math.max(0, i - 200), i + 500).replace(/\s+/g, " "));
+} else {
+  console.log("No jobposting links. Searching for employer markers instead:");
+  for (const marker of ["business", "employer", "noc", "location", "jobtitle"]) {
+    const re = new RegExp('class="[^"]*' + marker + '[^"]*"', "i");
+    const m = h.match(re);
+    if (m && m.index !== undefined) {
+      console.log(`--- ${m[0]} at ${m.index} ---`);
+      console.log(h.slice(Math.max(0, m.index - 300), m.index + 700).replace(/\s+/g, " "));
     }
   }
 }

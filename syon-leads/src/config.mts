@@ -13,26 +13,19 @@ export const config = {
   /** Cadence in days. Used to name batches and to warn on early runs. */
   cadenceDays: 14,
 
-  /** Service area. A lead outside this is dropped, not down-ranked. */
-  serviceArea: [
-    'Toronto',
-    'Mississauga',
-    'Brampton',
-    'Hamilton',
-    'Vaughan',
-    'Markham',
-    'Oakville',
-    'Burlington',
-    'Milton',
-    'Richmond Hill',
-    'Oshawa',
-    'Kitchener',
-    'Etobicoke',
-    'Scarborough',
-    'North York',
-    'Concord',
-    'Woodbridge',
-  ],
+  /**
+   * Home base. Syon is set up in Mississauga.
+   *
+   * Distance is a cost, not a qualifier: Raj will travel anywhere in Ontario
+   * to close a client. So location down-ranks a lead, it never drops one — an
+   * earlier version hard-filtered to twelve GTA cities and was silently
+   * discarding perfectly good leads from the rest of the province.
+   *
+   * Every source is Ontario-scoped by construction (a provincial ministry,
+   * an Ontario-filtered job search, a Toronto municipal dataset), so there is
+   * no need to check the province at all.
+   */
+  homeBase: 'Mississauga',
 
   /**
    * Employee-count band from the agreed spec. Most free sources do not publish
@@ -43,6 +36,20 @@ export const config = {
 
   /** A trigger older than this is stale — the buying window has closed. */
   maxTriggerAgeDays: 60,
+
+  /**
+   * How many leads in a batch may come from outside the GTA and Golden
+   * Horseshoe.
+   *
+   * The scoring bonus alone only nudges: a run where the distant leads happen
+   * to score well could hand Sandeep a batch of ten scattered across the
+   * province, which is a bad day's calling even if each lead is individually
+   * fine. This makes the focus a guarantee while keeping the door open for
+   * standout leads worth the drive.
+   *
+   * Set to config.batchSize to remove the cap entirely.
+   */
+  maxOutsideCorePerBatch: 3,
 } as const;
 
 /**
@@ -117,6 +124,52 @@ export const courseKeywords: { course: CourseSlug; patterns: RegExp[] }[] = [
     patterns: [/health and safety/i, /\bOHSA\b/, /safety coordinator/i],
   },
 ];
+
+/**
+ * Travel tiers, measured from Mississauga.
+ *
+ * A same-day round trip from home base costs Raj a couple of hours; Sudbury
+ * costs him a day and a hotel. Both are worth doing for a real client, so
+ * both appear — but when two leads are otherwise equal, the near one should be
+ * called first, and that is all this encodes.
+ *
+ * Deliberately coarse. Real drive times would need a geocoding service, which
+ * costs money this project does not have, and the ranking barely changes.
+ */
+export const travelTiers: { bonus: number; cities: string[] }[] = [
+  {
+    // Home turf — a short drive, easy to service repeatedly.
+    bonus: 25,
+    cities: [
+      'Mississauga', 'Brampton', 'Toronto', 'Etobicoke', 'Oakville', 'Milton',
+      'Vaughan', 'Woodbridge', 'Concord', 'North York', 'Scarborough',
+    ],
+  },
+  {
+    // Greater Golden Horseshoe — comfortable same-day return.
+    bonus: 12,
+    cities: [
+      'Hamilton', 'Burlington', 'Markham', 'Richmond Hill', 'Newmarket',
+      'Pickering', 'Ajax', 'Whitby', 'Oshawa', 'Kitchener', 'Waterloo',
+      'Cambridge', 'Guelph', 'Barrie', 'St. Catharines', 'Niagara Falls',
+      'Brantford', 'Aurora', 'King City', 'Bolton', 'Georgetown',
+    ],
+  },
+  {
+    // Everywhere else in Ontario — a longer trip, still worth closing.
+    bonus: 0,
+    cities: [],
+  },
+];
+
+export function travelBonus(city?: string): number {
+  if (!city) return travelTiers[1].bonus; // unknown: assume mid-range
+  const needle = city.trim().toLowerCase();
+  for (const tier of travelTiers) {
+    if (tier.cities.some((c) => c.toLowerCase() === needle)) return tier.bonus;
+  }
+  return 0;
+}
 
 /**
  * Scoring weights.

@@ -1,5 +1,5 @@
 import type { RawLead, ScoredLead, CourseSlug } from '../types.mts';
-import { config, courseKeywords, weights } from '../config.mts';
+import { config, courseKeywords, weights, travelBonus } from '../config.mts';
 
 /** Normalised company identity, used for dedupe across sources and batches. */
 export function leadKey(companyName: string, city?: string): string {
@@ -73,15 +73,26 @@ export function scoreLead(lead: RawLead): ScoredLead {
     reasons.push(`maps to ${lead.suggestedCourse} (+${weights.specificCourse})`);
   }
 
+  // Distance from Mississauga breaks ties; it never disqualifies.
+  const travel = travelBonus(lead.city);
+  if (travel > 0) {
+    score += travel;
+    reasons.push(`near home base (+${travel})`);
+  }
+
   return { ...lead, score, reasons, key: leadKey(lead.companyName, lead.city) };
 }
 
-/** Drops leads outside the service area or past the staleness window. */
+/**
+ * Drops leads past the staleness window.
+ *
+ * Location is deliberately NOT a filter. Raj will travel anywhere in Ontario
+ * to sign a client, and every source is already Ontario-scoped, so filtering
+ * by city only threw away business. Distance is handled as a scoring bonus in
+ * scoreLead instead.
+ */
 export function withinSpec(lead: RawLead): boolean {
-  if (recencyFactor(lead.trigger.date) <= 0) return false;
-  if (!lead.city) return true; // unknown city is not disqualifying on its own
-  const area = config.serviceArea.map((c) => c.toLowerCase());
-  return area.includes(lead.city.toLowerCase());
+  return recencyFactor(lead.trigger.date) > 0;
 }
 
 /**
@@ -90,27 +101,133 @@ export function withinSpec(lead: RawLead): boolean {
  * up in both enforcement and hiring data is a stronger lead than either signal
  * alone, so the combined entry keeps both reasons.
  */
+/** Corroboration from a genuinely different source. */
+const CROSS_SOURCE_BONUS = 20;
+/** Repeat activity within one source — real signal, but a weaker one. */
+const REPEAT_BONUS = 6;
+const REPEAT_BONUS_CAP = 18;
+
 export function mergeDuplicates(leads: ScoredLead[]): ScoredLead[] {
-  const byKey = new Map<string, ScoredLead>();
+  type Acc = {
+    lead: ScoredLead;
+    sources: Set<string>;
+    repeats: number;
+    alsoSeen: string[];
+  };
+
+  const byKey = new Map<string, Acc>();
 
   for (const lead of leads) {
-    const existing = byKey.get(lead.key);
-    if (!existing) {
-      byKey.set(lead.key, lead);
+    const acc = byKey.get(lead.key);
+    if (!acc) {
+      byKey.set(lead.key, {
+        lead,
+        sources: new Set([lead.source]),
+        repeats: 0,
+        alsoSeen: [],
+      });
       continue;
     }
-    byKey.set(lead.key, {
-      ...existing,
-      phone: existing.phone ?? lead.phone,
-      website: existing.website ?? lead.website,
-      contactName: existing.contactName ?? lead.contactName,
-      contactTitle: existing.contactTitle ?? lead.contactTitle,
-      suggestedCourse: existing.suggestedCourse ?? lead.suggestedCourse,
-      // Two independent signals is materially stronger than one.
-      score: Math.max(existing.score, lead.score) + 20,
-      reasons: [...existing.reasons, `also: ${lead.trigger.detail}`, 'multi-source (+20)'],
-    });
+
+    acc.sources.add(lead.source);
+    acc.repeats += 1;
+    acc.alsoSeen.push(lead.trigger.detail);
+
+    acc.lead = {
+      ...acc.lead,
+      phone: acc.lead.phone ?? lead.phone,
+      website: acc.lead.website ?? lead.website,
+      contactName: acc.lead.contactName ?? lead.contactName,
+      contactTitle: acc.lead.contactTitle ?? lead.contactTitle,
+      suggestedCourse: acc.lead.suggestedCourse ?? lead.suggestedCourse,
+      // Keep the strongest single trigger as the headline reason to call.
+      score: Math.max(acc.lead.score, lead.score),
+      trigger:
+        lead.score > acc.lead.score ? lead.trigger : acc.lead.trigger,
+    };
   }
 
-  return [...byKey.values()].sort((a, b) => b.score - a.score);
+  const out: ScoredLead[] = [];
+
+  for (const { lead, sources, repeats, alsoSeen } of byKey.values()) {
+    let score = lead.score;
+    const reasons = [...lead.reasons];
+
+    // Two independent sources agreeing is real corroboration and is worth
+    // much more than the same source listing a company twice.
+    if (sources.size > 1) {
+      score += CROSS_SOURCE_BONUS;
+      reasons.push(`corroborated by ${sources.size} sources (+${CROSS_SOURCE_BONUS})`);
+    }
+
+    // Repeat activity within one source still means something — a builder
+    // with six open permits has more crews at height than one with a single
+    // permit — but it is a volume signal, not corroboration, so it is worth
+    // less and it saturates. An earlier version added a flat 20 per duplicate
+    // and labelled it "multi-source", which let one busy builder accumulate
+    // +100 from what is really a single data source.
+    if (repeats > 0) {
+      const bonus = Math.min(repeats * REPEAT_BONUS, REPEAT_BONUS_CAP);
+      score += bonus;
+      reasons.push(`${repeats + 1} separate records (+${bonus})`);
+    }
+
+    // Two extra examples is plenty of context for a caller; the rest is noise
+    // on a spreadsheet.
+    for (const detail of alsoSeen.slice(0, 2)) {
+      reasons.push(`also: ${detail}`);
+    }
+    if (alsoSeen.length > 2) {
+      reasons.push(`and ${alsoSeen.length - 2} more`);
+    }
+
+    out.push({ ...lead, score, reasons });
+  }
+
+  return out.sort((a, b) => b.score - a.score);
+}
+
+/** True when the lead sits in the GTA / Golden Horseshoe focus area. */
+export function isCoreArea(city?: string): boolean {
+  return travelBonus(city) > 0;
+}
+
+/**
+ * Picks the batch, keeping it focused on the GTA without discarding a strong
+ * lead from further out.
+ *
+ * Leads arrive sorted by score. Core-area leads are taken in order; distant
+ * ones are taken in order too, but only up to the configured cap. If there
+ * are not enough core leads to fill the batch, the remaining slots go to the
+ * best distant ones rather than shipping a short batch — a real lead in
+ * Sudbury beats an empty row.
+ */
+export function selectBatch(
+  leads: ScoredLead[],
+  size: number,
+  maxOutsideCore: number,
+): ScoredLead[] {
+  const core = leads.filter((l) => isCoreArea(l.city));
+  const outside = leads.filter((l) => !isCoreArea(l.city));
+
+  const chosen = [
+    ...core.slice(0, size),
+    ...outside.slice(0, Math.min(maxOutsideCore, size)),
+  ];
+
+  // Re-sort so the call sheet is still strongest-first, then trim.
+  chosen.sort((a, b) => b.score - a.score);
+  const batch = chosen.slice(0, size);
+
+  // Backfill from whatever is left if the cap left the batch short.
+  if (batch.length < size) {
+    const taken = new Set(batch.map((l) => l.key));
+    for (const lead of leads) {
+      if (batch.length >= size) break;
+      if (!taken.has(lead.key)) batch.push(lead);
+    }
+    batch.sort((a, b) => b.score - a.score);
+  }
+
+  return batch;
 }

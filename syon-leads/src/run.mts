@@ -10,7 +10,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sources } from './sources/index.mts';
 import { config } from './config.mts';
-import { scoreLead, withinSpec, mergeDuplicates } from './lib/score.mts';
+import { scoreLead, withinSpec, mergeDuplicates, selectBatch, isCoreArea } from './lib/score.mts';
 import { History } from './lib/history.mts';
 import { Suppression } from './lib/suppression.mts';
 import { writeBatch } from './lib/output.mts';
@@ -110,15 +110,21 @@ async function main(): Promise<void> {
   const merged = mergeDuplicates(scored);
   const { kept, removed } = suppression.filter(merged);
   const fresh = history.filterUnseen(kept);
-  const batch = fresh.slice(0, config.batchSize);
+  const batch = selectBatch(fresh, config.batchSize, config.maxOutsideCorePerBatch);
 
   console.log('');
   console.log(`  ${raw.length} raw`);
-  console.log(`  ${inSpec.length} in service area and within ${config.maxTriggerAgeDays}d`);
+  console.log(`  ${inSpec.length} with a trigger inside the ${config.maxTriggerAgeDays}d window`);
   console.log(`  ${merged.length} after merging duplicate companies`);
   console.log(`  ${kept.length} after do-not-contact suppression (${removed.length} removed)`);
   console.log(`  ${fresh.length} never sent before`);
   console.log(`  ${batch.length} in this batch`);
+  const outside = batch.filter((l) => !isCoreArea(l.city));
+  if (outside.length > 0) {
+    console.log(
+      `    (${outside.length} from outside the GTA: ${outside.map((l) => l.city ?? '?').join(', ')})`,
+    );
+  }
 
   if (removed.length > 0) {
     console.log(`\n  Suppressed: ${removed.map((l) => l.companyName).join(', ')}`);
