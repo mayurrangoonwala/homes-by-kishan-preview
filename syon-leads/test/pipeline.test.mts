@@ -34,6 +34,7 @@ import {
   explainNoRows,
   looksLikeBusiness,
 } from '../src/sources/ckanPermits.mts';
+import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -677,5 +678,87 @@ describe('newsroom link following (news.ontario.ca)', () => {
     assert.equal(leads[0].companyName, 'Precision Metal Works Inc.');
     assert.equal(leads[0].suggestedCourse, 'working-at-heights');
     assert.ok(leads[0].trigger.detail.includes('$75,000'));
+  });
+});
+
+describe('feed discovery and parsing', () => {
+  test('finds the feed URL in a JavaScript shell head', () => {
+    // This is the shape the newsroom actually returns: an empty body, but a
+    // server-rendered head that still declares the feed.
+    const shell = `<!DOCTYPE html><html><head>
+      <link rel="stylesheet" href="/a.css">
+      <link rel="alternate" type="application/rss+xml" title="News" href="/mlitsd/en/rss.xml">
+    </head><body><div id="app"></div></body></html>`;
+
+    const feeds = discoverFeeds(shell, 'https://news.ontario.ca/mlitsd/en');
+    assert.deepEqual(feeds, ['https://news.ontario.ca/mlitsd/en/rss.xml']);
+  });
+
+  test('ignores stylesheets and non-feed alternates', () => {
+    const html = `
+      <link rel="alternate" hreflang="fr" href="/fr/page">
+      <link rel="stylesheet" href="/a.css">`;
+    assert.deepEqual(discoverFeeds(html, 'https://news.ontario.ca/'), []);
+  });
+
+  test('parses RSS items including CDATA titles', () => {
+    const rss = `<?xml version="1.0"?><rss><channel>
+      <item>
+        <title><![CDATA[Roofing Company Fined $75,000 After Worker Falls]]></title>
+        <link>https://news.ontario.ca/mlitsd/en/2026/08/a.html</link>
+        <description>Northgate Roofing Ltd. was fined after a worker fell from a roof.</description>
+        <pubDate>Mon, 03 Aug 2026 14:00:00 GMT</pubDate>
+      </item>
+      <item>
+        <title>Ontario Investing in Skills Training</title>
+        <link>https://news.ontario.ca/mlitsd/en/2026/08/b.html</link>
+        <description>A funding announcement.</description>
+        <pubDate>Tue, 04 Aug 2026 09:00:00 GMT</pubDate>
+      </item>
+    </channel></rss>`;
+
+    const items = parseFeed(rss);
+    assert.equal(items.length, 2);
+    assert.equal(items[0].title, 'Roofing Company Fined $75,000 After Worker Falls');
+    assert.ok(items[0].description?.includes('Northgate Roofing'));
+    assert.equal(items[0].link, 'https://news.ontario.ca/mlitsd/en/2026/08/a.html');
+  });
+
+  test('parses Atom entries with href-attribute links', () => {
+    const atom = `<feed>
+      <entry>
+        <title>Firm Convicted After Fall</title>
+        <link rel="alternate" href="https://news.ontario.ca/x.html"/>
+        <summary>Vertex Construction Group pleaded guilty.</summary>
+        <published>2026-08-01T10:00:00Z</published>
+      </entry>
+    </feed>`;
+
+    const items = parseFeed(atom);
+    assert.equal(items.length, 1);
+    assert.equal(items[0].link, 'https://news.ontario.ca/x.html');
+    assert.ok(items[0].description?.includes('Vertex'));
+  });
+
+  test('only the enforcement item yields a lead', () => {
+    // The funding announcement must produce nothing — this is what stops the
+    // feed strategy filling a batch with press releases.
+    const enforcement = parseBulletin(
+      'Northgate Roofing Ltd. was fined $75,000 after a worker fell from a roof.',
+      'https://news.ontario.ca/x',
+    );
+    const funding = parseBulletin(
+      'Ontario Investing in Skills Training. The government announced new funding.',
+      'https://news.ontario.ca/y',
+    );
+
+    assert.equal(enforcement.length, 1);
+    assert.equal(enforcement[0].suggestedCourse, 'working-at-heights');
+    assert.equal(funding.length, 0);
+  });
+
+  test('recognises a feed body regardless of content type', () => {
+    assert.equal(looksLikeFeed('<?xml version="1.0"?><rss>', ''), true);
+    assert.equal(looksLikeFeed('<!DOCTYPE html><html>', 'text/html'), false);
   });
 });

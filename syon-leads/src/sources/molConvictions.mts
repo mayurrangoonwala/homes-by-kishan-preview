@@ -5,16 +5,23 @@
 // problem, and training is the standard remedial step. There is no warmer cold
 // call in this sector.
 //
-// NEVER RUN AGAINST THE LIVE PAGE — the build environment blocks ontario.ca.
-// Rather than commit to one guess about the page shape, this tries several
-// extraction strategies and reports which (if any) worked. The index page may
-// list convictions inline, or it may only link to individual bulletins, so
-// both are handled.
+// Three extraction strategies, tried in order, because live runs showed the
+// page shape moving under us:
+//
+//   1. RSS/Atom feed, with the address read from the page's own autodiscovery
+//      <link>. The only strategy that works against the newsroom, which is a
+//      JavaScript application serving 1505 bytes of empty shell.
+//   2. Convictions listed inline on the index page.
+//   3. Following links to individual releases.
+//
+// Whichever succeeds is named in the diagnostics, so a future break says which
+// assumption stopped holding.
 
 import type { RawLead } from '../types.mts';
 import type { SourceResult, SourceContext } from './types.mts';
 import { fetchRaw, stripHtml, saveRaw, extractLinks } from '../lib/http.mts';
 import { classifyHtml, describeVerdict, describeHttpFailure } from '../lib/diagnose.mts';
+import { discoverFeeds, parseFeed, looksLikeFeed } from '../lib/feed.mts';
 import { courseFromText } from '../lib/score.mts';
 
 /**
@@ -190,11 +197,53 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
 
   const text = stripHtml(res.body);
 
-  // Strategy 1: convictions listed inline on the index.
-  let leads = parseBulletin(text, BULLETIN_INDEX);
-  let strategy = 'index page';
+  // Strategy 1: an RSS/Atom feed.
+  //
+  // Tried first because it is the only strategy that works when the newsroom
+  // renders client-side, which it does. The feed address is read out of the
+  // shell's <head>, where autodiscovery lives, so no feed URL is guessed.
+  let leads: RawLead[] = [];
+  let strategy = '';
 
-  // Strategy 2: index is a link list — follow the individual bulletins.
+  const feedUrls = [
+    ...discoverFeeds(res.body, BULLETIN_INDEX),
+    // Conventional fallbacks if the page declares no feed.
+    new URL('rss.xml', BULLETIN_INDEX.replace(/\/?$/, '/')).toString(),
+    new URL('feed', BULLETIN_INDEX.replace(/\/?$/, '/')).toString(),
+  ];
+
+  for (const feedUrl of feedUrls) {
+    const feed = await fetchRaw(feedUrl);
+    if (!feed.ok || !looksLikeFeed(feed.body, feed.contentType)) continue;
+
+    if (ctx.debugDir) saveRaw(ctx.debugDir, 'mol-feed.xml', feed.body);
+
+    const items = parseFeed(feed.body);
+    for (const item of items) {
+      const body = `${item.title}. ${item.description ?? ''}`;
+      const found = parseBulletin(body, item.link ?? feedUrl);
+      // A feed gives a real publication date; prefer it over the date the
+      // prose happens to mention, which is often the court date.
+      if (item.published) {
+        const when = new Date(item.published);
+        if (!Number.isNaN(when.getTime())) {
+          for (const lead of found) lead.trigger.date = when.toISOString();
+        }
+      }
+      leads.push(...found);
+    }
+
+    strategy = `feed ${feedUrl} (${items.length} items)`;
+    break;
+  }
+
+  // Strategy 2: convictions listed inline on the index page itself.
+  if (leads.length === 0) {
+    leads = parseBulletin(text, BULLETIN_INDEX);
+    if (leads.length > 0) strategy = 'index page';
+  }
+
+  // Strategy 3: index is a link list — follow the individual bulletins.
   if (leads.length === 0) {
     const links = bulletinLinks(res.body, BULLETIN_INDEX);
     if (links.length > 0) {
@@ -210,13 +259,41 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
     }
   }
 
+  // When a strategy produced leads, report that rather than classifying the
+  // index HTML — the newsroom shell is a JavaScript app and would always be
+  // reported as unusable even on a run where the feed worked perfectly.
+  if (leads.length > 0) {
+    return {
+      leads,
+      diagnostics: [
+        {
+          sourceId: 'mol-convictions',
+          ok: true,
+          note: `${leads.length} convictions extracted via ${strategy}.`,
+          hints: [],
+          bytes: res.bytes,
+          rawPath,
+        },
+      ],
+    };
+  }
+
   const verdict = classifyHtml(res.body, text.length);
   const diagnostic = describeVerdict('mol-convictions', verdict, {
     bytes: res.bytes,
     rawPath,
-    matched: leads.length,
+    matched: 0,
   });
-  diagnostic.note = `${diagnostic.note} (strategy: ${strategy})`;
+  diagnostic.note = `${diagnostic.note} (no strategy produced leads)`;
+
+  if (verdict === 'js-shell') {
+    diagnostic.hints = [
+      'The newsroom renders client-side, so the HTML will never contain convictions.',
+      'No RSS or Atom feed was found either, by autodiscovery or at the conventional paths.',
+      'Open the newsroom in a browser, use View Source, and search for "rss" or "atom" — then add that URL to feedUrls in src/sources/molConvictions.mts.',
+      'Failing that, check the Network tab for the request that returns the release list as JSON.',
+    ];
+  }
 
   return { leads, diagnostics: [diagnostic] };
 }
