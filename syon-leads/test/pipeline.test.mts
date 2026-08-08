@@ -19,7 +19,14 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { scoreLead, withinSpec, mergeDuplicates, leadKey, courseFromText } from '../src/lib/score.mts';
+import {
+  scoreLead,
+  withinSpec,
+  mergeDuplicates,
+  leadKey,
+  courseFromText,
+  looksHardToReach,
+} from '../src/lib/score.mts';
 import { travelBonus } from '../src/config.mts';
 import { History } from '../src/lib/history.mts';
 import { toCsv } from '../src/lib/output.mts';
@@ -1011,5 +1018,48 @@ describe('WSIB convictions', () => {
     const links = wsibConvictionLinks(html, 'https://www.wsib.ca/en/convictions');
     assert.equal(links.length, 1);
     assert.ok(links[0].startsWith('https://www.wsib.ca'));
+  });
+});
+
+describe('single-purpose entities are down-ranked, not dropped', () => {
+  test('recognises numbered Ontario corporations', () => {
+    assert.equal(looksHardToReach('2650192 Ontario Inc'), true);
+    assert.equal(looksHardToReach('001572247 Ontario Limited'), true);
+  });
+
+  test('recognises address-named entities', () => {
+    assert.equal(looksHardToReach('181b Poplar Plains Road Inc'), true);
+    assert.equal(looksHardToReach('108 Clovelly Avenue Inc'), true);
+  });
+
+  test('leaves real trading names alone', () => {
+    assert.equal(looksHardToReach('Greenbilt Homes Ltd'), false);
+    assert.equal(looksHardToReach('Scottsdale Contracting Inc'), false);
+    assert.equal(looksHardToReach('Nicks Developments Inc'), false);
+    assert.equal(looksHardToReach('Yorkwind Holdings Inc'), false);
+  });
+
+  test('a contactable company outranks an identical shell', () => {
+    const real = scoreLead(lead({ companyName: 'Scottsdale Contracting Inc' }));
+    const shell = scoreLead(lead({ companyName: '2650192 Ontario Inc' }));
+    assert.ok(real.score > shell.score);
+    assert.ok(shell.reasons.some((r) => /single-purpose entity/.test(r)));
+  });
+
+  test('but a shell with a fresh conviction still beats a stale real company', () => {
+    // Down-ranked, not disqualified: the name is still a thread to pull.
+    const shellStrong = scoreLead(
+      lead({
+        companyName: '2650192 Ontario Inc',
+        trigger: { kind: 'mol-enforcement', detail: 'Fined', date: daysAgo(1) },
+      }),
+    );
+    const realWeak = scoreLead(
+      lead({
+        companyName: 'Scottsdale Contracting Inc',
+        trigger: { kind: 'construction-permit', detail: 'Permit', date: daysAgo(50) },
+      }),
+    );
+    assert.ok(shellStrong.score > realWeak.score);
   });
 });

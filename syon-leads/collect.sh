@@ -24,6 +24,44 @@ rule() { say ""; say "======================================================"; s
 say "Syon leads — calibration report"
 say "Generated: $(date)"
 
+rule "0. Code version"
+
+# Two calibration rounds were wasted running stale code: a git pull aborted
+# because of local changes, the report still generated, and every number in it
+# described a version that had already been fixed. Checking loudly up front is
+# cheaper than reading a whole report that turns out to be meaningless.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  git fetch --quiet origin 2>/dev/null || true
+  LOCAL="$(git rev-parse @ 2>/dev/null || echo unknown)"
+  REMOTE="$(git rev-parse '@{u}' 2>/dev/null || echo unknown)"
+  DIRTY="$(git status --porcelain -- . 2>/dev/null | head -5)"
+
+  say "commit: $LOCAL"
+
+  if [ -n "$DIRTY" ]; then
+    say ""
+    say "STOP: you have local changes that will block a pull."
+    say "$DIRTY"
+    say ""
+    say "Run this instead, as ONE command:"
+    say "  cd ~/homes-by-kishan-preview && git stash && git pull && cd syon-leads && bash collect.sh"
+    exit 1
+  fi
+
+  if [ "$LOCAL" != "$REMOTE" ] && [ "$REMOTE" != "unknown" ]; then
+    say ""
+    say "STOP: this checkout is not up to date with origin."
+    say "  local:  $LOCAL"
+    say "  origin: $REMOTE"
+    say ""
+    say "Everything below would describe code that has already been changed."
+    say "Run: git pull    then run this script again."
+    exit 1
+  fi
+
+  say "up to date with origin"
+fi
+
 rule "1. Environment"
 
 NODE_V="$(node --version 2>/dev/null || echo 'NOT INSTALLED')"

@@ -42,6 +42,30 @@ function recencyFactor(iso: string): number {
   return 1 - age / config.maxTriggerAgeDays;
 }
 
+/**
+ * Companies that are real but very hard to actually phone.
+ *
+ * Development permits are frequently pulled by single-purpose entities: a
+ * numbered Ontario corporation, or one named after the address it was created
+ * to build. They are legitimate businesses, but they usually have no website,
+ * no listed number and no staff to train — the training buyer is the general
+ * contractor they hired, who is not named on the permit.
+ *
+ * Down-ranked rather than dropped: the name is still a thread to pull, and on
+ * a thin week it beats an empty row. But it should never outrank a company
+ * someone can actually ring.
+ */
+export function looksHardToReach(name: string): boolean {
+  const n = name.trim();
+  // "2650192 Ontario Inc", "001572247 Ontario Limited"
+  if (/^\d{5,}\s+(ontario|canada)\b/i.test(n)) return true;
+  // "181b Poplar Plains Road Inc", "108 Clovelly Avenue Inc"
+  if (/^\d+[a-z]?\s+\w+.*\b(road|rd|avenue|ave|street|st|drive|dr|crescent|cres|boulevard|blvd|lane|way|place|pl)\b/i.test(n)) {
+    return true;
+  }
+  return false;
+}
+
 export function scoreLead(lead: RawLead): ScoredLead {
   const reasons: string[] = [];
   let score = 0;
@@ -71,6 +95,13 @@ export function scoreLead(lead: RawLead): ScoredLead {
   if (lead.suggestedCourse) {
     score += weights.specificCourse;
     reasons.push(`maps to ${lead.suggestedCourse} (+${weights.specificCourse})`);
+  }
+
+  if (looksHardToReach(lead.companyName)) {
+    score -= weights.hardToReachPenalty;
+    reasons.push(
+      `single-purpose entity, likely no listed contact (-${weights.hardToReachPenalty})`,
+    );
   }
 
   // Distance from Mississauga breaks ties; it never disqualifies.

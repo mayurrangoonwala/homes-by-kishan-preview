@@ -198,6 +198,13 @@ export const weights: Record<string, number> = {
 
   /** Added when the trigger maps to a specific course, not a generic one. */
   specificCourse: 20,
+
+  /**
+   * Subtracted for numbered and address-named corporations, which are usually
+   * single-project shells with no listed phone. Sized to push them below an
+   * otherwise-equal contactable company without burying them entirely.
+   */
+  hardToReachPenalty: 25,
 };
 
 /** Sources are ordered by value; the runner reports per-source yield. */
