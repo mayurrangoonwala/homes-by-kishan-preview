@@ -37,6 +37,7 @@ import {
   cleanDescription,
 } from '../src/sources/ckanPermits.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
+import { extractReleases, candidateEndpoints } from '../src/lib/newsApi.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -899,5 +900,54 @@ describe('permit description cleanup', () => {
 
   test('leaves an already-clean description alone', () => {
     assert.equal(cleanDescription('Roof replacement'), 'Roof replacement');
+  });
+});
+
+describe('newsroom JSON API', () => {
+  test('extracts releases from a root-level array', () => {
+    const out = extractReleases([
+      { title: 'Firm Fined $75,000', url: '/a', publishedAt: '2026-08-01' },
+    ]);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].title, 'Firm Fined $75,000');
+  });
+
+  test('handles the common wrapper keys', () => {
+    for (const key of ['results', 'data', 'items', 'releases']) {
+      const out = extractReleases({ [key]: [{ title: 'X' }] });
+      assert.equal(out.length, 1, `should unwrap ${key}`);
+    }
+  });
+
+  test('handles one level of nesting', () => {
+    const out = extractReleases({ data: { results: [{ title: 'Nested' }] } });
+    assert.equal(out[0].title, 'Nested');
+  });
+
+  test('accepts alternative field names', () => {
+    const out = extractReleases([
+      { headline: 'H', excerpt: 'E', permalink: '/p', releaseDate: '2026-08-01' },
+    ]);
+    assert.equal(out[0].title, 'H');
+    assert.equal(out[0].summary, 'E');
+    assert.equal(out[0].url, '/p');
+    assert.equal(out[0].published, '2026-08-01');
+  });
+
+  test('skips rows with nothing title-shaped rather than inventing one', () => {
+    assert.equal(extractReleases([{ id: 1, body: 'no title here' }]).length, 0);
+  });
+
+  test('survives junk without throwing', () => {
+    assert.deepEqual(extractReleases(null), []);
+    assert.deepEqual(extractReleases('a string'), []);
+    assert.deepEqual(extractReleases({ unrelated: 5 }), []);
+  });
+
+  test('candidate endpoints carry the convictions type filter', () => {
+    const urls = candidateEndpoints();
+    assert.ok(urls.length >= 3);
+    assert.ok(urls.every((u) => u.includes('types=2007')));
+    assert.ok(urls.every((u) => u.startsWith('https://news.ontario.ca')));
   });
 });

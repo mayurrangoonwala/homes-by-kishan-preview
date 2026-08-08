@@ -5,12 +5,13 @@
 // problem, and training is the standard remedial step. There is no warmer cold
 // call in this sector.
 //
-// Three extraction strategies, tried in order, because live runs showed the
-// page shape moving under us:
+// Four extraction strategies, tried in order, because live runs kept moving
+// the page shape under us:
 //
-//   1. RSS/Atom feed, with the address read from the page's own autodiscovery
-//      <link>. The only strategy that works against the newsroom, which is a
-//      JavaScript application serving 1505 bytes of empty shell.
+//   0. The newsroom's own JSON API. The newsroom is a Vue application serving
+//      1505 bytes of empty shell, so this is where its data actually lives.
+//      The endpoint is undocumented, so several shapes are attempted.
+//   1. RSS/Atom feed, address read from the page's autodiscovery <link>.
 //   2. Convictions listed inline on the index page.
 //   3. Following links to individual releases.
 //
@@ -22,6 +23,7 @@ import type { SourceResult, SourceContext } from './types.mts';
 import { fetchRaw, stripHtml, saveRaw, extractLinks } from '../lib/http.mts';
 import { classifyHtml, describeVerdict, describeHttpFailure } from '../lib/diagnose.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../lib/feed.mts';
+import { fetchReleases } from '../lib/newsApi.mts';
 import { courseFromText } from '../lib/score.mts';
 
 /**
@@ -37,9 +39,13 @@ import { courseFromText } from '../lib/score.mts';
  */
 const BULLETIN_INDEX_CANDIDATES = [
   // Ministry of Labour, Immigration, Training and Skills Development
-  // newsroom. Convictions are published here as dated news releases, so this
-  // is a headline index rather than a page of inline bulletins — the
-  // link-following strategy below is the one that does the work.
+  // newsroom, filtered to release type 2007. The type filter came from a link
+  // that lands on the convictions category; the numeric id is opaque but the
+  // app passes it straight through to its API.
+  //
+  // Mailchimp tracking parameters were stripped from the original link: they
+  // identify an individual subscriber and have no business in a repository.
+  'https://news.ontario.ca/mlitsd/en?types=2007',
   'https://news.ontario.ca/mlitsd/en',
   'https://www.ontario.ca/page/court-bulletins-convictions',
   'https://www.ontario.ca/page/court-bulletins',
@@ -197,15 +203,40 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
 
   const text = stripHtml(res.body);
 
+  // Strategy 0: the app's own JSON API.
+  //
+  // Tried first because the newsroom is a Vue application and this is where
+  // its data actually comes from. The endpoint path is undocumented, so
+  // several shapes are attempted and every attempt is reported.
+  let leads: RawLead[] = [];
+  let strategy = '';
+  const apiAttempts: string[] = [];
+
+  {
+    const { releases, endpoint, attempts } = await fetchReleases();
+    for (const a of attempts) apiAttempts.push(`${a.url} -> ${a.status}, ${a.note}`);
+
+    for (const release of releases) {
+      const body = `${release.title}. ${release.summary ?? ''}`;
+      const found = parseBulletin(body, release.url ?? endpoint ?? BULLETIN_INDEX);
+      if (release.published) {
+        const when = new Date(release.published);
+        if (!Number.isNaN(when.getTime())) {
+          for (const l of found) l.trigger.date = when.toISOString();
+        }
+      }
+      leads.push(...found);
+    }
+
+    if (leads.length > 0) strategy = `newsroom API ${endpoint}`;
+  }
+
   // Strategy 1: an RSS/Atom feed.
   //
   // Tried first because it is the only strategy that works when the newsroom
   // renders client-side, which it does. The feed address is read out of the
   // shell's <head>, where autodiscovery lives, so no feed URL is guessed.
-  let leads: RawLead[] = [];
-  let strategy = '';
-
-  const feedUrls = [
+  const feedUrls = leads.length > 0 ? [] : [
     ...discoverFeeds(res.body, BULLETIN_INDEX),
     // Conventional fallbacks if the page declares no feed.
     new URL('rss.xml', BULLETIN_INDEX.replace(/\/?$/, '/')).toString(),
@@ -289,6 +320,8 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
   if (verdict === 'js-shell') {
     diagnostic.hints = [
       'The newsroom renders client-side, so the HTML will never contain convictions.',
+      'Newsroom API endpoints attempted:',
+      ...apiAttempts.map((a) => `   ${a}`),
       'No RSS or Atom feed was found either, by autodiscovery or at the conventional paths.',
       'Open the newsroom in a browser, use View Source, and search for "rss" or "atom" — then add that URL to feedUrls in src/sources/molConvictions.mts.',
       'Failing that, check the Network tab for the request that returns the release list as JSON.',
