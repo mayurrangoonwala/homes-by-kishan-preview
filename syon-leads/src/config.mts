@@ -34,8 +34,26 @@ export const config = {
    */
   employeeRange: { min: 5, max: 50 },
 
-  /** A trigger older than this is stale — the buying window has closed. */
-  maxTriggerAgeDays: 60,
+  /**
+   * How long a trigger stays worth calling, per kind.
+   *
+   * A single global window was wrong in both directions. A job posting goes
+   * cold fast — the role is filled and the training already booked. A
+   * conviction does not: the remediation runs for months, and regulators
+   * publish in monthly batches, so a flat 60 days threw away every WSIB
+   * conviction the moment it was published. A live run produced 26 leads and
+   * kept zero, purely on this.
+   */
+  maxTriggerAgeDays: {
+    'mol-enforcement': 120,
+    'wsib-enforcement': 120,
+    'construction-permit': 90,
+    hiring: 45,
+    'new-business': 90,
+  } as Record<string, number>,
+
+  /** Used when a trigger kind has no explicit window. */
+  defaultTriggerAgeDays: 60,
 
   /**
    * How many leads in a batch may come from outside the GTA and Golden

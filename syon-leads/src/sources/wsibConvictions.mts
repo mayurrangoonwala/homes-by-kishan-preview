@@ -25,6 +25,7 @@ import { fetchRaw, stripHtml, saveRaw, extractLinks } from '../lib/http.mts';
 import { classifyHtml, describeVerdict, describeHttpFailure } from '../lib/diagnose.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../lib/feed.mts';
 import { parseBulletin } from './molConvictions.mts';
+import { looksLikeBusiness } from './ckanPermits.mts';
 import type { RawLead } from '../types.mts';
 
 const INDEX_CANDIDATES = [
@@ -33,6 +34,30 @@ const INDEX_CANDIDATES = [
 ];
 
 const MAX_FOLLOW = 8;
+
+/**
+ * Convictions that are about a person, not an employer.
+ *
+ * The live WSIB list is dominated by individual benefit fraud — a claimant
+ * who misstated their condition, prosecuted under s.149. The first run pulled
+ * "Mahmoud Mohamed El Hacene of Ottawa" onto a lead list.
+ *
+ * That is not a near miss, it is a private individual who would be cold-called
+ * about corporate safety training because of a personal conviction. These must
+ * be excluded on the text, and separately every surviving name must look like
+ * a business.
+ */
+const CLAIMANT_FRAUD =
+  /\b(?:his|her|their) claim\b|claim for benefits|benefit(?:s)? fraud|false or misleading statement.*claim|received benefits|loss of earnings/i;
+
+/** Employer-side offences: the ones that indicate a business with obligations. */
+const EMPLOYER_OFFENCE =
+  /\bemployer\b|failing to register|failure to register|premium|payroll|classif|failing to report|failure to report an injury|reporting obligations|material change/i;
+
+export function isEmployerConviction(text: string): boolean {
+  if (CLAIMANT_FRAUD.test(text) && !EMPLOYER_OFFENCE.test(text)) return false;
+  return true;
+}
 
 const RATIONALE =
   'just penalised for a compliance failure, so safety obligations are live for them right now';
@@ -50,6 +75,20 @@ export function wsibConvictionLinks(html: string, baseUrl: string): string[] {
     .filter((u) => /wsib\.ca$/i.test(new URL(u).hostname))
     .filter((u) => /convict|prosecut|penalt|charged|fined/i.test(u))
     .slice(0, MAX_FOLLOW);
+}
+
+/**
+ * Keeps only convictions that are plausibly about an employer.
+ *
+ * Two independent gates, because either alone lets something through: the
+ * offence text must not read as personal benefit fraud, and the extracted name
+ * must carry a business marker. A person's name has no legal suffix, so the
+ * second gate catches what the first misses.
+ */
+export function filterToEmployers(leads: RawLead[]): RawLead[] {
+  return leads.filter(
+    (l) => isEmployerConviction(l.trigger.detail) && looksLikeBusiness(l.companyName),
+  );
 }
 
 export async function fetchWsibConvictions(ctx: SourceContext): Promise<SourceResult> {
@@ -83,7 +122,7 @@ export async function fetchWsibConvictions(ctx: SourceContext): Promise<SourceRe
 
   // Strategy 1: convictions listed inline, which is the usual shape for a
   // page whose entire purpose is to be a list.
-  leads.push(...parseBulletin(text, indexUrl, BULLETIN_OPTS));
+  leads.push(...filterToEmployers(parseBulletin(text, indexUrl, BULLETIN_OPTS)));
   if (leads.length > 0) strategy = 'index page';
 
   // Strategy 2: a feed, if the page declares one.
@@ -103,7 +142,7 @@ export async function fetchWsibConvictions(ctx: SourceContext): Promise<SourceRe
             for (const l of found) l.trigger.date = when.toISOString();
           }
         }
-        leads.push(...found);
+        leads.push(...filterToEmployers(found));
       }
       if (leads.length > 0) {
         strategy = `feed ${feedUrl}`;
@@ -121,7 +160,9 @@ export async function fetchWsibConvictions(ctx: SourceContext): Promise<SourceRe
         try {
           const page = await fetchRaw(link);
           if (page.ok) {
-            leads.push(...parseBulletin(stripHtml(page.body), link, BULLETIN_OPTS));
+            leads.push(
+              ...filterToEmployers(parseBulletin(stripHtml(page.body), link, BULLETIN_OPTS)),
+            );
           }
         } catch {
           // One unreachable record should not stop the rest.

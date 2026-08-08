@@ -35,11 +35,16 @@ function ageInDays(iso: string): number {
  * the configured window rather than cutting off sharply, so a batch that is
  * short on fresh triggers can still surface slightly older ones.
  */
-function recencyFactor(iso: string): number {
+function windowFor(kind: string): number {
+  return config.maxTriggerAgeDays[kind] ?? config.defaultTriggerAgeDays;
+}
+
+function recencyFactor(iso: string, kind: string): number {
+  const window = windowFor(kind);
   const age = ageInDays(iso);
-  if (age >= config.maxTriggerAgeDays) return 0;
+  if (age >= window) return 0;
   if (age <= 0) return 1;
-  return 1 - age / config.maxTriggerAgeDays;
+  return 1 - age / window;
 }
 
 /**
@@ -71,7 +76,7 @@ export function scoreLead(lead: RawLead): ScoredLead {
   let score = 0;
 
   const base = weights[lead.trigger.kind] ?? 0;
-  const recency = recencyFactor(lead.trigger.date);
+  const recency = recencyFactor(lead.trigger.date, lead.trigger.kind);
   const triggerScore = Math.round(base * recency);
   score += triggerScore;
 
@@ -123,7 +128,7 @@ export function scoreLead(lead: RawLead): ScoredLead {
  * scoreLead instead.
  */
 export function withinSpec(lead: RawLead): boolean {
-  return recencyFactor(lead.trigger.date) > 0;
+  return recencyFactor(lead.trigger.date, lead.trigger.kind) > 0;
 }
 
 /**

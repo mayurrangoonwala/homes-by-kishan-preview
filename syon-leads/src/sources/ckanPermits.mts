@@ -306,6 +306,30 @@ async function resolveResources(
   return { resources: [], via: 'nothing resolved' };
 }
 
+/**
+ * Builds a date-filtered SQL query against the datastore.
+ *
+ * Sorting alone has now failed twice. ISSUED_DATE desc puts NULLs first
+ * (permits applied for but not yet issued). _id desc returns the most recently
+ * INSERTED rows, which includes backfills and revisions of permits from years
+ * earlier — a live run returned 2025 records and the freshness filter binned
+ * every one.
+ *
+ * Filtering server-side on the date itself is the only approach that actually
+ * asks the question we mean: permits applied for recently. COALESCE lets a
+ * still-unissued permit qualify on its application date, which is the correct
+ * behaviour — a crew going up next month is a better lead than one that
+ * finished last year.
+ */
+export function recentPermitsSql(resourceId: string, sinceIso: string): string {
+  return [
+    `SELECT * FROM "${resourceId}"`,
+    `WHERE COALESCE("ISSUED_DATE", "APPLICATION_DATE") >= '${sinceIso}'`,
+    `ORDER BY COALESCE("ISSUED_DATE", "APPLICATION_DATE") DESC`,
+    `LIMIT 1000`,
+  ].join(' ');
+}
+
 export function ckanPermitSource(portal: CkanPortal) {
   return async (ctx: SourceContext): Promise<SourceResult> => {
     const { resources, via } = await resolveResources(portal);
@@ -331,7 +355,38 @@ export function ckanPermitSource(portal: CkanPortal) {
     // Try each active resource — portals often expose several years, and only
     // some carry current data.
     const allRows: Record<string, unknown>[] = [];
+    const since = new Date(Date.now() - 120 * 86_400_000).toISOString().slice(0, 10);
+    let fetchVia = 'SQL date filter';
+
     for (const resource of active.slice(0, 3)) {
+      // Preferred path: ask for recent permits explicitly.
+      const sqlUrl = `${portal.api}/datastore_search_sql?sql=${encodeURIComponent(
+        recentPermitsSql(resource.id, since),
+      )}`;
+      const sqlRes = await fetchRaw(sqlUrl);
+
+      if (sqlRes.ok) {
+        try {
+          const parsed = JSON.parse(sqlRes.body) as {
+            result?: { records?: Record<string, unknown>[] };
+          };
+          const records = parsed.result?.records ?? [];
+          if (records.length > 0) {
+            if (ctx.debugDir) {
+              saveRaw(ctx.debugDir, `${portal.id}-sql-${resource.id.slice(0, 8)}.json`, sqlRes.body);
+            }
+            allRows.push(...records);
+            continue;
+          }
+        } catch {
+          // Fall through to the plain search below.
+        }
+      }
+      fetchVia = 'plain search (SQL unavailable)';
+    }
+
+    // Fallback: the unfiltered endpoint, if SQL is disabled on this portal.
+    for (const resource of allRows.length > 0 ? [] : active.slice(0, 3)) {
       const sortParam = portal.sort ? `&sort=${encodeURIComponent(portal.sort)}` : '';
       let res = await fetchRaw(
         `${portal.api}/datastore_search?id=${resource.id}&limit=1000${sortParam}`,
@@ -375,7 +430,7 @@ export function ckanPermitSource(portal: CkanPortal) {
         {
           sourceId: portal.id,
           ok: true,
-          note: `${leads.length} height-relevant permits from ${allRows.length} records (via ${via}).`,
+          note: `${leads.length} height-relevant permits from ${allRows.length} recent records (${fetchVia}, dataset via ${via}).`,
           hints: [],
         },
       ],

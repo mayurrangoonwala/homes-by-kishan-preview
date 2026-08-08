@@ -114,7 +114,7 @@ async function main(): Promise<void> {
 
   console.log('');
   console.log(`  ${raw.length} raw`);
-  console.log(`  ${inSpec.length} with a trigger inside the ${config.maxTriggerAgeDays}d window`);
+  console.log(`  ${inSpec.length} with a trigger still inside its freshness window`);
   console.log(`  ${merged.length} after merging duplicate companies`);
   console.log(`  ${kept.length} after do-not-contact suppression (${removed.length} removed)`);
   console.log(`  ${fresh.length} never sent before`);

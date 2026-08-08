@@ -142,44 +142,7 @@ rule "7. Job Bank result markup"
 # jobbank-sample.html is ~280KB, far too large to paste, and the first bytes
 # are all <head>. This pulls out just the markup that wraps a job result,
 # which is the only part needed to write the parser.
-if [ -f debug/jobbank-sample.html ]; then
-  node -e '
-const fs = require("fs");
-const h = fs.readFileSync("debug/jobbank-sample.html", "utf8");
-
-
-// Job Bank job links look like /jobsearch/jobposting/<id>. Anchoring on that
-// finds the real result rows regardless of what the wrapper element is called
-// — the first attempt guessed at class names and returned the search toolbar.
-const links = [...h.matchAll(/href="[^"]*jobposting\/\d+[^"]*"/gi)];
-console.log(`job posting links found: ${links.length}`);
-
-if (links.length > 0) {
-  // Print the markup surrounding the first few, which is where the employer
-  // name and location live.
-  let n = 0;
-  for (const m of links) {
-    if (n >= 3) break;
-    const i = m.index ?? 0;
-    console.log("----- context around link " + (n + 1) + " -----");
-    console.log(h.slice(Math.max(0, i - 700), i + 900).replace(/\s+/g, " "));
-    n++;
-  }
-} else {
-  console.log("No jobposting links. Searching for employer markers instead:");
-  for (const marker of ["business", "employer", "noc", "location", "jobtitle"]) {
-    const re = new RegExp('class="[^"]*' + marker + '[^"]*"', "i");
-    const m = h.match(re);
-    if (m && m.index !== undefined) {
-      console.log(`--- ${m[0]} at ${m.index} ---`);
-      console.log(h.slice(Math.max(0, m.index - 300), m.index + 700).replace(/\s+/g, " "));
-    }
-  }
-}
-' 2>&1 | tee -a "$REPORT"
-else
-  say "No Job Bank payload captured."
-fi
+node scripts/inspect-jobbank.mjs 2>&1 | tee -a "$REPORT"
 
 rule "Done"
 say "Report written to: $(pwd)/$REPORT"

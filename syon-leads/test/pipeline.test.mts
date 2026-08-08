@@ -42,10 +42,15 @@ import {
   explainNoRows,
   looksLikeBusiness,
   cleanDescription,
+  recentPermitsSql,
 } from '../src/sources/ckanPermits.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
 import { extractReleases, candidateEndpoints } from '../src/lib/newsApi.mts';
-import { wsibConvictionLinks } from '../src/sources/wsibConvictions.mts';
+import {
+  wsibConvictionLinks,
+  isEmployerConviction,
+  filterToEmployers,
+} from '../src/sources/wsibConvictions.mts';
 import type { RawLead } from '../src/types.mts';
 
 const daysAgo = (n: number) =>
@@ -1061,5 +1066,87 @@ describe('single-purpose entities are down-ranked, not dropped', () => {
       }),
     );
     assert.ok(shellStrong.score > realWeak.score);
+  });
+});
+
+describe('permit query asks for recent permits explicitly', () => {
+  test('filters and orders on the date, not on insertion order', () => {
+    const sql = recentPermitsSql('abc-123', '2026-05-01');
+    assert.ok(sql.includes('FROM "abc-123"'));
+    assert.ok(sql.includes("COALESCE(\"ISSUED_DATE\", \"APPLICATION_DATE\") >= '2026-05-01'"));
+    assert.ok(/ORDER BY COALESCE.*DESC/.test(sql));
+  });
+
+  test('COALESCE lets an unissued permit qualify on its application date', () => {
+    // Sorting on ISSUED_DATE alone put NULLs first; sorting on _id returned
+    // year-old backfills. Both produced zero usable leads on live runs.
+    const sql = recentPermitsSql('abc-123', '2026-05-01');
+    assert.ok(sql.includes('COALESCE'), 'must not depend on ISSUED_DATE alone');
+  });
+});
+
+describe('WSIB filters out personal convictions', () => {
+  test('drops individual benefit fraud', () => {
+    assert.equal(
+      isEmployerConviction(
+        'pleaded guilty to knowingly making a false or misleading statement to the WSIB in connection with his claim for benefits',
+      ),
+      false,
+    );
+  });
+
+  test('keeps employer registration and payroll offences', () => {
+    assert.equal(isEmployerConviction('failing to register with the WSIB as an employer'), true);
+    assert.equal(isEmployerConviction('understating payroll to reduce premiums'), true);
+  });
+
+  test('a person named in a conviction never reaches the call sheet', () => {
+    // Two gates: the offence text, and whether the name looks like a business.
+    const leads = filterToEmployers([
+      {
+        source: 'wsib-convictions',
+        companyName: 'Mahmoud Mohamed El Hacene',
+        trigger: {
+          kind: 'wsib-enforcement',
+          detail: 'Fined $5,000 — false statement in connection with his claim for benefits',
+          date: daysAgo(10),
+        },
+      },
+      {
+        source: 'wsib-convictions',
+        companyName: 'Northgate Roofing Ltd.',
+        trigger: {
+          kind: 'wsib-enforcement',
+          detail: 'Fined $12,000 — failing to register as an employer',
+          date: daysAgo(10),
+        },
+      },
+    ]);
+
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0].companyName, 'Northgate Roofing Ltd.');
+  });
+});
+
+describe('freshness windows differ by trigger kind', () => {
+  test('a conviction outlives a job posting', () => {
+    const oldConviction = lead({
+      trigger: { kind: 'wsib-enforcement', detail: 'x', date: daysAgo(70) },
+    });
+    const oldPosting = lead({
+      trigger: { kind: 'hiring', detail: 'x', date: daysAgo(70) },
+    });
+
+    // A flat 60-day window binned every WSIB conviction on the live run,
+    // because regulators publish monthly and the batch was already 65 days old.
+    assert.equal(withinSpec(oldConviction), true);
+    assert.equal(withinSpec(oldPosting), false);
+  });
+
+  test('everything eventually goes stale', () => {
+    assert.equal(
+      withinSpec(lead({ trigger: { kind: 'mol-enforcement', detail: 'x', date: daysAgo(200) } })),
+      false,
+    );
   });
 });
