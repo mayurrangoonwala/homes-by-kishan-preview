@@ -5,15 +5,20 @@
 // problem, and training is the standard remedial step. There is no warmer cold
 // call in this sector.
 //
-// Four extraction strategies, tried in order, because live runs kept moving
+// Six extraction strategies, tried in order, because live runs kept moving
 // the page shape under us:
 //
-//   0. The newsroom's own JSON API. The newsroom is a Vue application serving
-//      1505 bytes of empty shell, so this is where its data actually lives.
-//      The endpoint is undocumented, so several shapes are attempted.
-//   1. RSS/Atom feed, address read from the page's autodiscovery <link>.
-//   2. Convictions listed inline on the index page.
-//   3. Following links to individual releases.
+//   R. Rescue: if the index comes back as a JavaScript shell, try refetching
+//      it identifying as a crawler — see spaRescue.mts. If a rescued page
+//      comes back, every strategy below runs against that instead of the
+//      original empty shell.
+//   0. The newsroom's own JSON API, discovered by scanning its JS bundle for
+//      API-shaped strings, then a short list of guessed shapes as fallback.
+//   1. Sitemap. A relevant sitemap URL fetched and parsed directly, with no
+//      guessing about API shape at all.
+//   2. RSS/Atom feed, address read from the page's autodiscovery <link>.
+//   3. Convictions listed inline on the index page.
+//   4. Following links to individual releases.
 //
 // Whichever succeeds is named in the diagnostics, so a future break says which
 // assumption stopped holding.
@@ -24,6 +29,7 @@ import { fetchRaw, stripHtml, saveRaw, extractLinks } from '../lib/http.mts';
 import { classifyHtml, describeVerdict, describeHttpFailure } from '../lib/diagnose.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../lib/feed.mts';
 import { fetchReleases } from '../lib/newsApi.mts';
+import { fetchAsCrawler, discoverSitemapUrls } from '../lib/spaRescue.mts';
 import { courseFromText } from '../lib/score.mts';
 
 /**
@@ -206,14 +212,14 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
   }
 
   const BULLETIN_INDEX = res.url;
-  const rawPath = ctx.debugDir
-    ? saveRaw(ctx.debugDir, 'mol-index.html', res.body)
-    : undefined;
 
   if (!res.ok) {
+    const rawPathOnFailure = ctx.debugDir
+      ? saveRaw(ctx.debugDir, 'mol-index.html', res.body)
+      : undefined;
     const diag = describeHttpFailure('mol-convictions', res.status, 'ontario.ca', {
       bytes: res.bytes,
-      rawPath,
+      rawPath: rawPathOnFailure,
     });
     diag.hints = [
       'Every known URL for this page failed. Attempts:',
@@ -222,6 +228,32 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
     ];
     return { leads: [], diagnostics: [diag] };
   }
+
+  // Rescue: if this came back as a JavaScript shell, try refetching it as a
+  // crawler before doing anything else. Everything below reads from `res`, so
+  // a successful rescue upgrades every later strategy transparently rather
+  // than needing its own separate handling.
+  let rescueNote: string | undefined;
+  if (classifyHtml(res.body, stripHtml(res.body).length) === 'js-shell') {
+    const rendered = await fetchAsCrawler(BULLETIN_INDEX);
+    if (rendered === undefined) {
+      rescueNote = 'dynamic-rendering rescue skipped — robots.txt disallows this path for crawlers';
+    } else if (!rendered.ok) {
+      rescueNote = `dynamic-rendering rescue attempted, HTTP ${rendered.status}`;
+    } else {
+      const renderedVerdict = classifyHtml(rendered.body, stripHtml(rendered.body).length);
+      if (renderedVerdict !== 'js-shell' && rendered.bytes > res.bytes) {
+        rescueNote = `dynamic-rendering rescue succeeded — ${rendered.bytes} bytes vs ${res.bytes} from the shell`;
+        res = rendered;
+      } else {
+        rescueNote = `dynamic-rendering rescue attempted — no improvement (${rendered.bytes} bytes, still ${renderedVerdict})`;
+      }
+    }
+  }
+
+  const rawPath = ctx.debugDir
+    ? saveRaw(ctx.debugDir, 'mol-index.html', res.body)
+    : undefined;
 
   const text = stripHtml(res.body);
 
@@ -255,7 +287,34 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
     if (leads.length > 0) strategy = `newsroom API ${endpoint}`;
   }
 
-  // Strategy 1: an RSS/Atom feed.
+  // Strategy 1: sitemap.
+  //
+  // Government sites publish these for SEO almost without exception, and it
+  // is a stable documented format rather than a guessed API shape. Filtered
+  // to slugs carrying enforcement language, same test as the link-following
+  // strategy below, so a huge sitemap does not turn into dozens of fetches.
+  if (leads.length === 0) {
+    const origin = new URL(BULLETIN_INDEX).origin;
+    const sitemapUrls = await discoverSitemapUrls(
+      origin,
+      (url) => ENFORCEMENT_SLUG.test(url) || DATED_RELEASE.test(url),
+    );
+
+    if (sitemapUrls.length > 0) {
+      strategy = `${sitemapUrls.length} sitemap URLs`;
+      for (const url of sitemapUrls.slice(0, MAX_FOLLOW)) {
+        try {
+          const page = await fetchRaw(url);
+          if (page.ok) leads.push(...parseBulletin(stripHtml(page.body), url));
+        } catch {
+          // One unreachable page should not stop the rest.
+        }
+      }
+      if (leads.length === 0) strategy = ''; // found URLs, but none parsed
+    }
+  }
+
+  // Strategy 2: an RSS/Atom feed.
   //
   // Tried first because it is the only strategy that works when the newsroom
   // renders client-side, which it does. The feed address is read out of the
@@ -292,13 +351,13 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
     break;
   }
 
-  // Strategy 2: convictions listed inline on the index page itself.
+  // Strategy 3: convictions listed inline on the index page itself.
   if (leads.length === 0) {
     leads = parseBulletin(text, BULLETIN_INDEX);
     if (leads.length > 0) strategy = 'index page';
   }
 
-  // Strategy 3: index is a link list — follow the individual bulletins.
+  // Strategy 4: index is a link list — follow the individual bulletins.
   if (leads.length === 0) {
     const links = bulletinLinks(res.body, BULLETIN_INDEX);
     if (links.length > 0) {
@@ -324,7 +383,7 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
         {
           sourceId: 'mol-convictions',
           ok: true,
-          note: `${leads.length} convictions extracted via ${strategy}.`,
+          note: `${leads.length} convictions extracted via ${strategy}.${rescueNote ? ` (${rescueNote})` : ''}`,
           hints: [],
           bytes: res.bytes,
           rawPath,
@@ -344,11 +403,11 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
   if (verdict === 'js-shell') {
     diagnostic.hints = [
       'The newsroom renders client-side, so the HTML will never contain convictions.',
-      'Newsroom API endpoints attempted:',
+      rescueNote ? `Dynamic-rendering rescue: ${rescueNote}` : 'Dynamic-rendering rescue was not attempted.',
+      'Newsroom API endpoints attempted (guessed plus any found by scanning the JS bundle):',
       ...apiAttempts.map((a) => `   ${a}`),
-      'No RSS or Atom feed was found either, by autodiscovery or at the conventional paths.',
-      'Open the newsroom in a browser, use View Source, and search for "rss" or "atom" — then add that URL to feedUrls in src/sources/molConvictions.mts.',
-      'Failing that, check the Network tab for the request that returns the release list as JSON.',
+      'No sitemap yielded a relevant URL, no RSS/Atom feed was found by autodiscovery or convention.',
+      'Remaining manual option: open the newsroom in a browser, Inspect -> Network -> Fetch/XHR, reload, and find the request that returns the release list. Send that URL, or add it directly to candidateEndpoints() in src/lib/newsApi.mts.',
     ];
   }
 

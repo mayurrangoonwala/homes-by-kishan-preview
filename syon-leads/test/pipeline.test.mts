@@ -28,7 +28,9 @@ import {
   courseFromText,
   looksHardToReach,
 } from '../src/lib/score.mts';
-import { travelBonus } from '../src/config.mts';
+import { travelBonus, weights, enabledSources } from '../src/config.mts';
+import { ALL_TRIGGER_KINDS } from '../src/types.mts';
+import { sources } from '../src/sources/index.mts';
 import { History } from '../src/lib/history.mts';
 import { toCsv } from '../src/lib/output.mts';
 import { Suppression } from '../src/lib/suppression.mts';
@@ -47,12 +49,15 @@ import {
 } from '../src/sources/ckanPermits.mts';
 import { parseResults, parseLocation } from '../src/sources/jobbank.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
+import { extractReleases, candidateEndpoints } from '../src/lib/newsApi.mts';
 import {
-  extractReleases,
-  candidateEndpoints,
   bundleUrls,
   extractApiCandidates,
-} from '../src/lib/newsApi.mts';
+  parseRobots,
+  isAllowed,
+  parseSitemapLocs,
+  extractInlineState,
+} from '../src/lib/spaRescue.mts';
 import {
   wsibConvictionLinks,
   isEmployerConviction,
@@ -1288,5 +1293,150 @@ describe('newsroom API discovery from the app bundle', () => {
   test('ignores plain asset paths', () => {
     const js = 'var a="/images/logo.png",b="/fonts/font.woff2";';
     assert.deepEqual(extractApiCandidates(js, 'https://news.ontario.ca'), []);
+  });
+});
+
+describe('robots.txt parsing', () => {
+  test('collects Sitemap directives regardless of user-agent block', () => {
+    const robots = [
+      'User-agent: *',
+      'Disallow: /admin/',
+      'Sitemap: https://example.com/sitemap.xml',
+      '',
+      'User-agent: Googlebot',
+      'Disallow: /private/',
+      'Sitemap: https://example.com/sitemap-news.xml',
+    ].join('\n');
+
+    const parsed = parseRobots(robots);
+    assert.deepEqual(parsed.sitemaps, [
+      'https://example.com/sitemap.xml',
+      'https://example.com/sitemap-news.xml',
+    ]);
+  });
+
+  test('collects Disallow only under * and Googlebot blocks', () => {
+    const robots = [
+      'User-agent: *',
+      'Disallow: /admin/',
+      '',
+      'User-agent: BadBot',
+      'Disallow: /everything/',
+      '',
+      'User-agent: Googlebot',
+      'Disallow: /crawler-only/',
+    ].join('\n');
+
+    const parsed = parseRobots(robots);
+    assert.deepEqual(parsed.disallow, ['/admin/', '/crawler-only/']);
+    assert.ok(!parsed.disallow.includes('/everything/'), 'irrelevant UA block ignored');
+  });
+
+  test('ignores comments and blank lines', () => {
+    const robots = '# a comment\n\nUser-agent: *\n# another\nDisallow: /x/\n';
+    assert.deepEqual(parseRobots(robots).disallow, ['/x/']);
+  });
+
+  test('isAllowed does prefix matching, empty rule disallows nothing', () => {
+    assert.equal(isAllowed(['/admin/'], '/admin/users'), false);
+    assert.equal(isAllowed(['/admin/'], '/public/page'), true);
+    assert.equal(isAllowed([''], '/anything'), true);
+  });
+});
+
+describe('sitemap parsing', () => {
+  test('extracts <loc> entries from a plain sitemap', () => {
+    const xml =
+      '<?xml version="1.0"?><urlset>' +
+      '<url><loc>https://x.com/a</loc></url>' +
+      '<url><loc>https://x.com/b</loc></url>' +
+      '</urlset>';
+    assert.deepEqual(parseSitemapLocs(xml), ['https://x.com/a', 'https://x.com/b']);
+  });
+
+  test('extracts <loc> entries from a sitemap index the same way', () => {
+    const xml =
+      '<sitemapindex><sitemap><loc>https://x.com/sitemap-1.xml</loc></sitemap></sitemapindex>';
+    assert.deepEqual(parseSitemapLocs(xml), ['https://x.com/sitemap-1.xml']);
+  });
+
+  test('tolerates whitespace inside the tag', () => {
+    const xml = '<url><loc>\n  https://x.com/a  \n</loc></url>';
+    assert.deepEqual(parseSitemapLocs(xml), ['https://x.com/a']);
+  });
+});
+
+describe('inline hydration state extraction', () => {
+  test('extracts window.__NUXT__', () => {
+    const html = '<script>window.__NUXT__={"data":{"releases":[{"title":"X"}]}}</script>';
+    const state = extractInlineState(html) as any;
+    assert.equal(state.data.releases[0].title, 'X');
+  });
+
+  test('extracts window.__INITIAL_STATE__', () => {
+    const html = '<script>window.__INITIAL_STATE__={"a":1}</script>';
+    assert.deepEqual(extractInlineState(html), { a: 1 });
+  });
+
+  test('extracts __NEXT_DATA__', () => {
+    const html = '<script id="__NEXT_DATA__">{"props":{"a":1}}</script>';
+    assert.deepEqual(extractInlineState(html), { props: { a: 1 } });
+  });
+
+  test('returns undefined when none of the known patterns are present', () => {
+    // This is the actual newsroom shell: none of these frameworks' hydration
+    // markers are present, which is why this strategy alone does not rescue it.
+    const shell = '<html><body><div id=app></div></body></html>';
+    assert.equal(extractInlineState(shell), undefined);
+  });
+});
+
+describe('source registry completeness', () => {
+  // These exist to fail loudly, in CI, the moment someone adds a new trigger
+  // kind or a new source and forgets a step — rather than silently shipping a
+  // lead that scores zero, or a source nobody remembered to register.
+
+  test('every TriggerKind has a scoring weight', () => {
+    for (const kind of ALL_TRIGGER_KINDS) {
+      assert.ok(
+        typeof weights[kind] === 'number',
+        `TriggerKind "${kind}" has no entry in weights (config.mts) — it will silently score 0`,
+      );
+    }
+  });
+
+  test('every TriggerKind has a positive weight', () => {
+    // A weight of 0 is indistinguishable from a missing entry in the batch
+    // output, so it is worth asserting explicitly rather than just presence.
+    for (const kind of ALL_TRIGGER_KINDS) {
+      assert.ok((weights[kind] ?? 0) > 0, `TriggerKind "${kind}" has weight 0`);
+    }
+  });
+
+  test('every registered source has a non-empty id and label', () => {
+    for (const source of sources) {
+      assert.ok(source.id.length > 0);
+      assert.ok(source.label.length > 0);
+    }
+  });
+
+  test('no two registered sources share an id', () => {
+    const ids = sources.map((s) => s.id);
+    assert.equal(new Set(ids).size, ids.length, 'duplicate source id would silently shadow one source in --source filtering');
+  });
+
+  test('enabledSources in config lists every registered source id', () => {
+    // The two lists exist for different reasons (one is the actual registry,
+    // one documents intent in config.mts) and are easy to let drift apart.
+    const registered = new Set(sources.map((s) => s.id));
+    for (const id of enabledSources) {
+      assert.ok(registered.has(id), `enabledSources lists "${id}" but no source with that id is registered in sources/index.mts`);
+    }
+    for (const source of sources) {
+      assert.ok(
+        (enabledSources as readonly string[]).includes(source.id),
+        `source "${source.id}" is registered but missing from enabledSources in config.mts`,
+      );
+    }
   });
 });

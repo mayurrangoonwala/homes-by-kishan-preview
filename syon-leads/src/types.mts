@@ -36,6 +36,25 @@ export type TriggerKind =
   /** Company recently incorporated in a relevant sector. */
   | 'new-business';
 
+/**
+ * Every TriggerKind, kept in sync with the union above by a test.
+ *
+ * A union type has no runtime existence — nothing stops a new member being
+ * added here without a matching entry in config.ts's `weights`, and
+ * `weights[lead.trigger.kind] ?? 0` fails silent when that happens: the lead
+ * scores zero, sinks to the bottom, and never reaches a batch. No error, no
+ * warning, just a source that quietly never contributes. This array is the
+ * thing a completeness test iterates to catch that at test time instead of
+ * a live run.
+ */
+export const ALL_TRIGGER_KINDS: TriggerKind[] = [
+  'mol-enforcement',
+  'wsib-enforcement',
+  'hiring',
+  'construction-permit',
+  'new-business',
+];
+
 export type Trigger = {
   kind: TriggerKind;
   /** Human-readable reason, printed verbatim on the call sheet. */

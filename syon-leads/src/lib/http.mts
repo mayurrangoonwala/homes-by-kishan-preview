@@ -39,14 +39,23 @@ export type FetchResult = {
  * Never throws on a non-2xx. A 403 tells us as much as a 200 does — it says
  * the source is blocking rather than that the parser is wrong — and throwing
  * away that distinction is what makes remote debugging slow.
+ *
+ * `headerOverrides` lets a caller identify differently for one request — used
+ * by the dynamic-rendering rescue in spaRescue.mts, which needs a crawler
+ * user agent to reach the pre-rendered version some sites serve to indexers.
+ * Still goes through the same per-host throttle.
  */
-export async function fetchRaw(url: string): Promise<FetchResult> {
+export async function fetchRaw(
+  url: string,
+  headerOverrides?: Record<string, string>,
+): Promise<FetchResult> {
   await throttle(url);
   const res = await fetch(url, {
     headers: {
       'User-Agent': USER_AGENT,
       Accept: 'text/html,application/json,application/xhtml+xml',
       'Accept-Language': 'en-CA,en;q=0.9',
+      ...headerOverrides,
     },
     redirect: 'follow',
   });

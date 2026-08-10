@@ -2,17 +2,15 @@
 //
 // The newsroom is a Vue application: the HTML is 1505 bytes of empty shell and
 // there is no RSS feed. The release list therefore arrives over a JSON call
-// the app makes after boot, and that call is the only viable way in.
-//
-// The endpoint path is not documented, so this tries a small set of plausible
-// shapes and reports exactly what each returned. That is cheap, and it beats
-// asking someone to sit in a browser's Network tab — which remains the
-// fallback when none of these land.
+// the app makes after boot, and that call is the only viable way in via this
+// strategy specifically — the site-generic bundle scanning and endpoint
+// guessing live in spaRescue.mts and are reused here, not reimplemented.
 //
 // The `types` filter is passed through because a link to the convictions
 // category carries `?types=2007`, and the app forwards that to its API.
 
 import { fetchRaw } from './http.mts';
+import { bundleUrls, extractApiCandidates } from './spaRescue.mts';
 
 export type NewsRelease = {
   title: string;
@@ -24,74 +22,6 @@ export type NewsRelease = {
 export type ApiAttempt = { url: string; status: number; note: string };
 
 const ORIGIN = 'https://news.ontario.ca';
-
-/**
- * Pulls candidate API paths out of the application's own JavaScript.
- *
- * Better than guessing, and better than asking someone to sit in a browser's
- * Network tab: a Vue build inlines its API base path as a string literal, so
- * the bundle the shell already tells us to load contains the answer.
- *
- * Deliberately permissive about what looks like an endpoint, because the
- * candidates cost one request each to test and a missed one costs a whole
- * round trip.
- */
-export function extractApiCandidates(js: string, origin: string): string[] {
-  const found = new Set<string>();
-
-  const patterns = [
-    // Absolute, "api" in the host: "https://api.example.com/releases"
-    /["'`](https?:\/\/api\.[a-z0-9.-]+\/[a-z0-9/_.-]*)["'`]/gi,
-    // Absolute, "api" in the path: "https://example.com/api/releases"
-    /["'`](https?:\/\/[a-z0-9.-]+\/[a-z0-9/_.-]*api[a-z0-9/_.-]*)["'`]/gi,
-    // Rooted path: "/api/v1/releases"
-    /["'`](\/(?:api|rest|graphql)[a-z0-9/_.-]*)["'`]/gi,
-    // Versioned path without the word api: "/v1/releases"
-    /["'`](\/v\d\/[a-z0-9/_.-]*(?:release|news|article|post)[a-z0-9/_.-]*)["'`]/gi,
-  ];
-
-  for (const pattern of patterns) {
-    for (const m of js.matchAll(pattern)) {
-      const raw = m[1];
-      if (!raw || raw.length > 160) continue;
-      // Skip source maps, assets and obvious non-endpoints.
-      if (/\.(?:js|css|png|jpe?g|svg|woff2?|map|ico)$/i.test(raw)) continue;
-      try {
-        found.add(new URL(raw, origin).toString());
-      } catch {
-        // Unparseable literal; ignore.
-      }
-    }
-  }
-
-  return [...found];
-}
-
-/**
- * Script URLs the shell tells the browser to load.
- *
- * The real newsroom shell writes unquoted attributes throughout —
- * `<script src=/js/app.43d1fd35.js>` rather than `src="/js/app.js"`. A
- * quotes-only pattern found zero scripts against a real capture and would
- * have made discovery silently useless on the one page it exists for.
- */
-export function bundleUrls(html: string, origin: string): string[] {
-  const out = new Set<string>();
-  const pattern = /<script\b[^>]*\bsrc\s*=\s*(?:["']([^"']+)["']|([^\s>]+))/gi;
-
-  for (const m of html.matchAll(pattern)) {
-    const raw = m[1] ?? m[2];
-    if (!raw) continue;
-    try {
-      const url = new URL(raw, origin).toString();
-      // Only same-origin bundles; third-party tag managers are noise.
-      if (new URL(url).hostname === new URL(origin).hostname) out.add(url);
-    } catch {
-      // Ignore.
-    }
-  }
-  return [...out];
-}
 
 /** Candidate endpoints, most likely first. */
 export function candidateEndpoints(ministry = 'mlitsd', types = '2007'): string[] {
@@ -170,8 +100,9 @@ function firstString(
 /**
  * Tries each endpoint, returning the first that yields releases.
  *
- * Endpoints discovered in the application bundle are tried before the guessed
- * ones, since a string the app itself ships is far more likely to be real.
+ * Endpoints discovered in the application bundle (via spaRescue.mts) are
+ * tried before the guessed ones, since a string the app itself ships is far
+ * more likely to be real than a shape this file assumed.
  */
 export async function fetchReleases(shellHtml?: string): Promise<{
   releases: NewsRelease[];

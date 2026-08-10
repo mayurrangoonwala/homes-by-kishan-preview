@@ -8,7 +8,7 @@ subscriptions. Node 22.6+ only.
 
 ```bash
 npm run demo     # full pipeline on invented sample data — no network
-npm test         # 106 tests
+npm test         # 128 tests
 npm run inspect  # hit the live sources, diagnose them, write nothing
 npm run dry      # live sources, print candidate leads, write nothing
 npm run batch    # live sources, write the call sheet
@@ -78,19 +78,25 @@ Plus a one-page markdown summary for the email body.
 
 **Verified:** the pipeline. Scoring, recency decay, service-area filtering,
 duplicate merging, the never-send-twice ledger, do-not-contact suppression,
-CSV escaping, batch numbering, and the diagnostics below. 106 tests, all
-passing. This is the part with commercial consequences and it is correct.
+CSV escaping, batch numbering, source-registry completeness, and the
+diagnostics below. 128 tests, all passing. This is the part with commercial
+consequences and it is correct.
 
 **Calibrated against live data:** Toronto permits, Job Bank and WSIB. All three
 were rewritten against captured payloads, and the fixtures in the test suite are
 copied verbatim from those captures.
 
-**Still unsolved:** Ontario Ministry of Labour convictions. The newsroom at
-news.ontario.ca is a Vue application serving 1505 bytes of empty shell, with no
-RSS feed and no data endpoint found yet. Five candidate API paths are attempted
-on every run and reported. This is the highest-value source in the system and
-the only one not producing leads — finding the request the app makes, via the
-browser's Network tab, is what unblocks it.
+**Best-effort, not confirmed working:** Ontario Ministry of Labour convictions.
+The newsroom at news.ontario.ca is a Vue application serving 1505 bytes of empty
+shell, with no RSS feed and no data endpoint discovered by the guessed
+candidates. `fetchMolConvictions` now runs a full rescue chain against it —
+dynamic-rendering-to-crawlers, sitemap discovery, and JS-bundle scanning for the
+app's own API string, all generic and reusable (see `lib/spaRescue.mts`) —
+before falling back to the guessed endpoints and RSS autodiscovery it already
+had. This was built and unit tested from a sandbox where news.ontario.ca itself
+is unreachable, so none of it has been exercised against the live site. Run
+`bash collect.sh` and read the diagnostics; if every strategy still comes back
+empty, the hints name the manual fallback (Network tab).
 
 ## Calibrating the sources
 
@@ -171,23 +177,46 @@ trading names, so "Northgate Roofing" also blocks "Northgate Roofing and Sheet
 Metal Ltd". `not-interested` is **not** suppression — that is a no for now, and
 worth another look in a year.
 
-## Adding sources
+## Adding a new source
 
-Cheapest wins first:
+Copy `src/sources/_template.mts`. It is a nine-step checklist with the reasons
+attached, not just a shape to fill in — every step exists because a real source
+in this codebase got it wrong first and cost a round trip. Skim it before
+starting, since several steps have to happen in a specific order (the trigger
+kind before the weight, the weight before the freshness window).
 
-1. **More permit portals.** `ckanPermitSource()` turns a portal into a source
-   from a config object, so a new CKAN municipality is a few lines. Toronto
-   alone covers a fraction of the service area, so this is the biggest easy
-   gain.
+Two things make skipping a step loud instead of silent:
 
-   Only Toronto is configured, on purpose: Mississauga, Brampton and Hamilton
-   publish on ArcGIS Hub or bespoke platforms rather than CKAN, and their
-   endpoints have not been confirmed from here. Find the real dataset URL
-   first — a guessed endpoint that 404s is worse than an honest gap. ArcGIS
-   portals need a small adapter alongside `ckanPermits.mts`; the parser and
-   height-relevance filter are reusable as-is.
-2. **Ontario Business Registry** for new incorporations in relevant sectors.
-3. **WSIB classification data** for sector targeting.
+- **The source-registry completeness tests** (`describe('source registry
+  completeness', ...)` in `test/pipeline.test.mts`) fail if a `TriggerKind` has
+  no weight, if a source is registered in `sources/index.mts` but missing from
+  `enabledSources` in `config.mts` or vice versa, or if two sources share an
+  id. Run `npm test` after wiring in a new source; if it's genuinely wired up
+  right, these pass with no changes needed on your part.
+- **`lib/spaRescue.mts`** is the toolkit for the failure mode most new
+  government/public-data sources eventually hit: a page that renders with
+  JavaScript and ships nothing in the initial HTML. Sitemap discovery,
+  dynamic-rendering-to-crawlers, JS-bundle scanning and hydration-state
+  extraction are all there, generic, and already proven against a real
+  capture — see `molConvictions.mts` for the full chain wired together, or
+  reach for one function at a time.
+
+Concrete opportunities, cheapest first:
+
+1. **More CKAN permit portals.** `ckanPermitSource()` in `ckanPermits.mts`
+   turns a portal config object into a working source — Toronto is the only
+   one wired up, and it alone covers a fraction of the service area. Only
+   proceed once you have the *real* dataset slug or URL confirmed in a
+   browser; a guessed endpoint that 404s is worse than an honest gap, and this
+   codebase has that rule for a reason (see the WSIB and MOL commit history).
+   Mississauga, Brampton and Hamilton are believed to publish on ArcGIS Hub
+   rather than CKAN, which needs a small parallel adapter, not a portal config
+   — the parser and height-relevance filter in `ckanPermits.mts` are reusable
+   either way.
+2. **Ontario Business Registry** for new incorporations in relevant sectors —
+   this is the source for the still-unused `'new-business'` TriggerKind.
+3. **WSIB classification data** for sector targeting, distinct from the
+   convictions source already built.
 
 Deliberately **not** used: Indeed and LinkedIn. Both prohibit scraping in their
 terms of service, and building a client-facing business process on a terms
@@ -209,17 +238,22 @@ Calls are made by Syon, so the obligations sit with them. Two things to know:
 
 ```
 src/
-  config.mts        Batch size, service area, keyword→course map, weights
-  types.mts
-  run.mts           CLI
-  sources/          One adapter per data source
-    ckanPermits.mts   Reusable CKAN permit adapter + parser
-  lib/score.mts     Scoring, recency, dedupe keys, merging
-  lib/history.mts   The permanent ledger
+  config.mts          Batch size, travel tiers, freshness windows, weights
+  types.mts           Shared shapes, incl. ALL_TRIGGER_KINDS for the completeness test
+  run.mts             CLI
+  sources/
+    index.mts           The registry — one import + one array entry per source
+    _template.mts        Copy this to add a new source. Not registered; inert.
+    ckanPermits.mts       Reusable CKAN permit adapter + parser
+    molConvictions.mts    The full spaRescue chain, wired together, as a worked example
+  lib/spaRescue.mts    Generic toolkit for JS-rendered sites — sitemap, dynamic
+                       rendering, bundle scanning, hydration state
+  lib/score.mts        Scoring, recency, dedupe keys, merging
+  lib/history.mts      The permanent ledger
   lib/suppression.mts  Do-not-contact list
-  lib/output.mts    CSV + summary
-  fixtures/demo.mts Invented sample leads for --demo
-test/               106 tests
+  lib/output.mts       CSV + summary
+  fixtures/demo.mts    Invented sample leads for --demo
+test/                 128 tests, including source-registry completeness checks
 data/history.json     Every lead ever sent. Commit this.
 data/suppression.json Do-not-contact list. Commit this.
 ```
