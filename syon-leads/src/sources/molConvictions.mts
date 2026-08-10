@@ -235,7 +235,9 @@ export async function fetchMolConvictions(ctx: SourceContext): Promise<SourceRes
   const apiAttempts: string[] = [];
 
   {
-    const { releases, endpoint, attempts } = await fetchReleases();
+    // The shell is passed in so the API path can be read out of the app's
+    // own JavaScript rather than guessed.
+    const { releases, endpoint, attempts } = await fetchReleases(res.body);
     for (const a of attempts) apiAttempts.push(`${a.url} -> ${a.status}, ${a.note}`);
 
     for (const release of releases) {

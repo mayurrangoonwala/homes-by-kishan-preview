@@ -47,7 +47,12 @@ import {
 } from '../src/sources/ckanPermits.mts';
 import { parseResults, parseLocation } from '../src/sources/jobbank.mts';
 import { discoverFeeds, parseFeed, looksLikeFeed } from '../src/lib/feed.mts';
-import { extractReleases, candidateEndpoints } from '../src/lib/newsApi.mts';
+import {
+  extractReleases,
+  candidateEndpoints,
+  bundleUrls,
+  extractApiCandidates,
+} from '../src/lib/newsApi.mts';
 import {
   wsibConvictionLinks,
   isEmployerConviction,
@@ -1235,5 +1240,53 @@ describe('conviction parsing artefacts from the live run', () => {
       'https://x',
     );
     assert.equal(boilerplate[0].city, undefined, 'no city rather than a wrong one');
+  });
+});
+
+describe('newsroom API discovery from the app bundle', () => {
+  test('finds scripts with unquoted src attributes', () => {
+    // Regression: the real newsroom shell writes src=/js/app.js with no
+    // quotes at all. A quotes-only pattern found zero scripts against a real
+    // capture, silently disabling discovery on the one page it exists for.
+    const shell =
+      '<head><script src=/js/chunk-vendors.abc123.js></script>' +
+      '<script src=/js/app.def456.js></script></head>';
+    const urls = bundleUrls(shell, 'https://news.ontario.ca');
+    assert.equal(urls.length, 2);
+    assert.ok(urls.includes('https://news.ontario.ca/js/app.def456.js'));
+  });
+
+  test('also handles quoted attributes', () => {
+    const shell = '<script src="/js/app.js"></script>';
+    assert.deepEqual(bundleUrls(shell, 'https://news.ontario.ca'), [
+      'https://news.ontario.ca/js/app.js',
+    ]);
+  });
+
+  test('drops third-party bundles', () => {
+    const shell =
+      '<script src=/js/app.js></script>' +
+      '<script src=https://www.googletagmanager.com/gtm.js></script>';
+    const urls = bundleUrls(shell, 'https://news.ontario.ca');
+    assert.equal(urls.length, 1);
+    assert.ok(!urls.some((u) => u.includes('googletagmanager')));
+  });
+
+  test('pulls a rooted API path out of minified JS', () => {
+    const js = 'var e={baseURL:"/api/v2/releases"},t="/js/chunk.js";';
+    const found = extractApiCandidates(js, 'https://news.ontario.ca');
+    assert.ok(found.includes('https://news.ontario.ca/api/v2/releases'));
+    assert.ok(!found.some((u) => u.endsWith('chunk.js')), 'must skip asset paths');
+  });
+
+  test('pulls an absolute API host out of minified JS', () => {
+    const js = 'const n="https://api.news.ontario.ca/v1/releases";';
+    const found = extractApiCandidates(js, 'https://news.ontario.ca');
+    assert.ok(found.includes('https://api.news.ontario.ca/v1/releases'));
+  });
+
+  test('ignores plain asset paths', () => {
+    const js = 'var a="/images/logo.png",b="/fonts/font.woff2";';
+    assert.deepEqual(extractApiCandidates(js, 'https://news.ontario.ca'), []);
   });
 });
