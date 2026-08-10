@@ -8,7 +8,7 @@ subscriptions. Node 22.6+ only.
 
 ```bash
 npm run demo     # full pipeline on invented sample data — no network
-npm test         # 48 tests
+npm test         # 106 tests
 npm run inspect  # hit the live sources, diagnose them, write nothing
 npm run dry      # live sources, print candidate leads, write nothing
 npm run batch    # live sources, write the call sheet
@@ -22,15 +22,18 @@ book, and it gets cancelled after two batches.
 This finds companies where **something just happened that means they need
 training now**:
 
-| Trigger | Why it converts | Weight |
-| --- | --- | --- |
-| Ministry of Labour conviction or fine | Urgent, funded, board-level problem. Training is the standard remedial step | 100 |
-| Hiring for a role needing certification | A stated need with a timeline, announced publicly | 60 |
-| Building permit pulled | Crews going up. An inference, not a statement | 35 |
-| New incorporation in a relevant sector | Right sector, no evidence of need yet | 15 |
+| Trigger | Why it converts | Weight | Stays fresh |
+| --- | --- | --- | --- |
+| Ministry of Labour conviction | Usually means someone was hurt. Urgent, funded, board-level | 100 | 120 days |
+| WSIB conviction | A compliance failure just penalised. Real, but no evidence of injury | 70 | 120 days |
+| Hiring for a role needing certification | A stated need with a timeline, announced publicly | 60 | 45 days |
+| Building permit pulled | Crews going up. An inference, not a statement | 35 | 90 days |
+| New incorporation in a relevant sector | Right sector, no evidence of need yet | 15 | 90 days |
 
-Scores decay to zero across 60 days — a Ministry order from last week is a
-different conversation from one eight weeks ago.
+Freshness differs by kind for a reason. A job posting goes cold fast — the role
+is filled and the training already booked. A conviction does not, and regulators
+publish in monthly batches, so a flat 60-day window binned every WSIB conviction
+the day it appeared. One live run produced 26 leads and kept zero on that alone.
 
 Each lead ships with **the course to pitch** and **the reason to call**, so the
 opener is "I saw you're hiring lift truck operators" rather than a cold
@@ -58,7 +61,15 @@ Plus a one-page markdown summary for the email body.
 - **Merges duplicates across sources** and scores them *higher* — a company
   appearing in both enforcement and hiring data is a stronger lead than either
   signal alone.
-- **Drops anything outside the service area** or past the staleness window.
+- **Ranks by travel distance, never filters on it.** Raj is in Mississauga but
+  travels anywhere in Ontario to sign a client, so distance breaks ties and a
+  quota keeps a batch GTA-focused without discarding a standout lead further out.
+- **Keeps private individuals off the sheet.** Permit data mixes contractors
+  with homeowners, and the WSIB list is mostly personal benefit fraud. Both are
+  filtered out — a name needs a positive business signal to qualify.
+- **Down-ranks single-purpose entities.** Numbered and address-named
+  corporations pull development permits but have no listed phone and no staff to
+  train.
 - **A dead source never kills the batch.** The others still produce a list.
 - **Short batches are allowed.** Ten good beats ten padded, and the runner says
   so out loud.
@@ -67,13 +78,19 @@ Plus a one-page markdown summary for the email body.
 
 **Verified:** the pipeline. Scoring, recency decay, service-area filtering,
 duplicate merging, the never-send-twice ledger, do-not-contact suppression,
-CSV escaping, batch numbering, and the diagnostics below. 48 tests, all
+CSV escaping, batch numbering, and the diagnostics below. 106 tests, all
 passing. This is the part with commercial consequences and it is correct.
 
-**Not verified:** the three source parsers, against live endpoints. This was
-built in an environment whose egress policy blocks `ontario.ca`,
-`jobbank.gc.ca` and the Toronto CKAN API, so the parsers are written against
-the documented shape of those pages but have never run on the real HTML.
+**Calibrated against live data:** Toronto permits, Job Bank and WSIB. All three
+were rewritten against captured payloads, and the fixtures in the test suite are
+copied verbatim from those captures.
+
+**Still unsolved:** Ontario Ministry of Labour convictions. The newsroom at
+news.ontario.ca is a Vue application serving 1505 bytes of empty shell, with no
+RSS feed and no data endpoint found yet. Five candidate API paths are attempted
+on every run and reported. This is the highest-value source in the system and
+the only one not producing leads — finding the request the app makes, via the
+browser's Network tab, is what unblocks it.
 
 ## Calibrating the sources
 
@@ -97,10 +114,13 @@ fixes, and the output names which one you have:
 | `parser matched nothing` | Real content, patterns wrong | Genuine parser fix — send the raw file |
 | `N records but none parsed` | Schema differs | Output lists the real column names; add them to `FIELD_CANDIDATES` |
 
-Built to survive the common failures: the CKAN dataset is located by search as
-well as by slug, so a rename does not break it; the MOL source parses the index
-and falls back to following linked bulletins; column names are a candidate list
-rather than hardcoded.
+Built to survive the failures that actually happened. The Ontario bulletins page
+moved, so index URLs are a candidate list. The CKAN dataset could be renamed, so
+it is located by search as well as by slug. Permit column names differ between
+revisions, so they are a candidate list that reports the real schema when
+nothing matches. Sorting by date failed twice — NULLs first on one column,
+insertion order on another — so the permit query filters on the date in SQL
+instead.
 
 The parsers stay deliberately conservative — they skip anything ambiguous
 rather than guess, because a wrong company name on a call sheet is worse than a
@@ -199,7 +219,7 @@ src/
   lib/suppression.mts  Do-not-contact list
   lib/output.mts    CSV + summary
   fixtures/demo.mts Invented sample leads for --demo
-test/               29 tests
+test/               106 tests
 data/history.json     Every lead ever sent. Commit this.
 data/suppression.json Do-not-contact list. Commit this.
 ```

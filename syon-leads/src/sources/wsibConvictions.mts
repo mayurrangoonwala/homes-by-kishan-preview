@@ -15,10 +15,11 @@
 // is not evidence that a worker was hurt, which is why it scores below an OHSA
 // conviction rather than equal to it.
 //
-// NEVER RUN AGAINST THE LIVE PAGE from the build environment — wsib.ca is
-// blocked there. The parser is shared with the Ministry source, which has been
-// exercised against real release text, but the page shape here is unverified
-// and the diagnostics will say so.
+// Calibrated against the live page, which extracts cleanly from the index.
+// The important finding was what the list actually contains: it is dominated
+// by individual benefit fraud rather than employer offences, so the filtering
+// below is not a nicety — without it this source puts private individuals on a
+// cold-call sheet.
 
 import type { SourceResult, SourceContext } from './types.mts';
 import { fetchRaw, stripHtml, saveRaw, extractLinks } from '../lib/http.mts';

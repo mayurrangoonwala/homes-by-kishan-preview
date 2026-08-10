@@ -8,10 +8,11 @@
 // stating a need — hence the lower weight in config.mts. It earns its place on
 // volume.
 //
-// NEVER RUN AGAINST THE LIVE API. Two things are therefore built defensively:
-// the dataset is located by search rather than a hardcoded slug (so a rename
-// does not break it), and when no row parses, the field names actually present
-// are reported so the mapping fix is obvious rather than guesswork.
+// Calibrated against Toronto's live dataset. Built defensively because that
+// calibration took several rounds: the dataset is located by search as well as
+// by slug so a rename does not break it, field names are a candidate list, and
+// when no row parses the schema actually returned is reported rather than a
+// bare zero.
 
 import type { RawLead } from '../types.mts';
 import type { SourceResult, SourceContext } from './types.mts';
@@ -30,13 +31,13 @@ export type CkanPortal = {
   city: string;
   datasetUrl: string;
   /**
-   * CKAN sort expression, e.g. "ISSUED_DATE desc".
+   * CKAN sort expression, used only by the fallback path.
    *
-   * Essential, not cosmetic. Toronto's "active permits" dataset returns rows
-   * in insertion order, so the first page is the OLDEST records — the first
-   * live run pulled 363 permits from 2022, every one of which the staleness
-   * filter would then discard. Sorting newest-first is the difference between
-   * this source producing leads and producing nothing.
+   * The primary path filters on the date in SQL, because sorting alone failed
+   * twice: ISSUED_DATE desc puts NULLs first (permits applied for but not yet
+   * issued), and _id desc returns the most recently INSERTED rows, which
+   * include backfills of permits years old. This is the last resort when the
+   * portal has SQL disabled.
    */
   sort?: string;
 };

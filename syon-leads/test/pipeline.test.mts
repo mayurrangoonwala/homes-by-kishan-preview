@@ -7,11 +7,12 @@
 // ledger, CSV quoting. This is the part with commercial consequences if it is
 // wrong, and it is fully verified.
 //
-// The PARSER tests pin the behaviour of the source scrapers against sample
-// text. They prove the parsers do something sensible with input of the
-// expected shape. They do NOT prove the live pages have that shape — this was
-// written in a sandbox with no access to ontario.ca, jobbank.gc.ca or the
-// Toronto CKAN API. Expect to recalibrate on first live run.
+// The PARSER tests pin the behaviour of the source scrapers. Most now use
+// fixtures copied verbatim from live captures — Job Bank article markup,
+// Toronto permit rows, WSIB conviction text — so they test the real shapes
+// rather than assumed ones. The exception is the Ontario newsroom, which is a
+// JavaScript application whose data endpoint has not been found; those tests
+// pin intent rather than verified behaviour.
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
